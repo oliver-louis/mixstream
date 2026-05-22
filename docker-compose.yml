@@ -1,0 +1,129 @@
+name: mixstream
+
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mixstream}
+      POSTGRES_USER: ${POSTGRES_USER:-mixstream}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  app:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: ${MIXSTREAM_ENV_FILE:-.env}
+        required: false
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mixstream}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-mixstream}
+      DJMIX_MEDIA_ROOT: /media
+      RUN_MIGRATIONS: "true"
+      RUN_COLLECTSTATIC: "true"
+      WEB_CONCURRENCY: ${WEB_CONCURRENCY:-3}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
+    volumes:
+      - ${NAS_MEDIA_PATH:?set NAS_MEDIA_PATH in .env}:/media
+      - static-data:/app/staticfiles
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/', timeout=5).read()\""]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  worker:
+    build: .
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    env_file:
+      - path: ${MIXSTREAM_ENV_FILE:-.env}
+        required: false
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-mixstream}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-mixstream}
+      DJMIX_MEDIA_ROOT: /media
+      RUN_MIGRATIONS: "false"
+      RUN_COLLECTSTATIC: "false"
+    volumes:
+      - ${NAS_MEDIA_PATH:?set NAS_MEDIA_PATH in .env}:/media
+    command: ["python", "manage.py", "process_mix_media", "--sleep", "45"]
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      app:
+        condition: service_healthy
+    ports:
+      - "${APP_PORT:-8088}:8080"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ${NAS_MEDIA_PATH:?set NAS_MEDIA_PATH in .env}:/media:ro
+      - static-data:/static:ro
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 sh -c 'ls /media >/dev/null' && wget -q -O /dev/null http://127.0.0.1:8080/health/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  loki:
+    image: grafana/loki:3.4.2
+    profiles: ["observability"]
+    restart: unless-stopped
+    command: ["-config.file=/etc/loki/local-config.yaml", "-config.expand-env=true"]
+    environment:
+      LOKI_RETENTION: ${LOKI_RETENTION:-168h}
+    volumes:
+      - ./observability/loki/local-config.yaml:/etc/loki/local-config.yaml:ro
+      - loki-data:/loki
+
+  alloy:
+    image: grafana/alloy:v1.7.5
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      - loki
+    command: ["run", "/etc/alloy/config.alloy", "--server.http.listen-addr=0.0.0.0:12345", "--storage.path=/var/lib/alloy/data"]
+    volumes:
+      - ./observability/alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - alloy-data:/var/lib/alloy/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+  grafana:
+    image: grafana/grafana:11.5.2
+    profiles: ["observability"]
+    restart: unless-stopped
+    depends_on:
+      - loki
+    ports:
+      - "127.0.0.1:${GRAFANA_PORT:-3000}:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana/provisioning/datasources/loki.yaml:/etc/grafana/provisioning/datasources/loki.yaml:ro
+
+volumes:
+  postgres-data:
+  static-data:
+  loki-data:
+  alloy-data:
+  grafana-data:

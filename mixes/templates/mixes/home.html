@@ -1,0 +1,27 @@
+{% extends "mixes/base.html" %}
+{% block title %}Public mixes · MixStream{% endblock %}
+{% block content %}
+<section class="hero">
+  <div>
+    <p class="eyebrow">DJ mixes, hosted at home</p>
+    <h1>Long-form sets without the platform noise.</h1>
+    <p>Browse public mixes from friends, artists, and selectors. Log in when someone shares a private set with you.</p>
+  </div>
+  {% if user.is_authenticated %}
+    <a class="button primary" href="{% url 'mixes:upload' %}">Upload a mix</a>
+  {% else %}
+    <a class="button primary" href="{% url 'mixes:login' %}">Log in</a>
+  {% endif %}
+</section>
+
+<section class="section-head">
+  <h2>Fresh public mixes</h2>
+</section>
+<div class="mix-list">
+  {% for mix in mixes %}
+    {% include "mixes/partials/mix_card.html" %}
+  {% empty %}
+    <p class="empty">No public mixes yet.</p>
+  {% endfor %}
+</div>
+{% endblock %}

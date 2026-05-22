@@ -1,0 +1,72 @@
+{% load static %}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MixStream{% endblock %}</title>
+  <link rel="icon" type="image/png" sizes="18x18" href="{% static 'mixes/branding/favicon-18-stroke.png' %}">
+  <link rel="icon" type="image/png" sizes="28x28" href="{% static 'mixes/branding/favicon-28-stroke.png' %}">
+  <link rel="stylesheet" href="{% static 'mixes/css/app.css' %}?v={{ STATIC_VERSION }}">
+</head>
+<body class="{% block body_class %}{% endblock %}" data-default-cover="{% static 'mixes/branding/defaultcover.png' %}">
+  <header class="topbar">
+    <a class="brand" href="{% url 'mixes:home' %}">
+      <img class="brand-logo" src="{% static 'mixes/branding/horizontal-logo.png' %}" alt="MixStream">
+    </a>
+    <nav class="nav">
+      {% if user.is_authenticated %}
+        <a href="{% url 'mixes:library' %}">Library</a>
+        <a class="upload-link" href="{% url 'mixes:upload' %}">Upload</a>
+        <a href="{% url 'mixes:edit_profile' %}">Profile</a>
+        {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+      {% else %}
+        <a href="{% url 'mixes:login' %}">Log in</a>
+      {% endif %}
+    </nav>
+  </header>
+
+  {% if messages %}
+    <aside class="messages">
+      {% for message in messages %}
+        <div class="message">{{ message }}</div>
+      {% endfor %}
+    </aside>
+  {% endif %}
+
+  <main class="shell">
+    {% block content %}{% endblock %}
+  </main>
+
+  <aside class="player" data-player hidden>
+    <button class="transport-button" type="button" data-player-toggle aria-label="Play or pause">▶</button>
+    <div class="player-main" data-player-open role="button" tabindex="0" aria-label="Open track page">
+      <div class="player-meta">
+        <div class="player-cover" data-player-cover></div>
+        <div>
+          <strong data-player-title></strong>
+          <span data-player-artist></span>
+        </div>
+      </div>
+      <div class="player-controls">
+        <span class="time" data-player-time>0:00</span>
+        <div class="player-progress" data-player-progress>
+          <div class="player-progress-markers" data-player-progress-markers></div>
+          <span class="player-progress-fill"></span>
+        </div>
+        <span class="time" data-player-duration>0:00</span>
+      </div>
+      <audio data-player-audio preload="metadata"></audio>
+    </div>
+    <div class="volume-control">
+      <button class="volume-button" type="button" data-volume-toggle aria-label="Mute or unmute">🔊</button>
+      <input class="volume-slider" data-volume-slider type="range" min="0" max="1" step="0.01" value="1" aria-label="Volume">
+    </div>
+  </aside>
+
+  <script src="{% static 'mixes/js/player.js' %}?v={{ STATIC_VERSION }}"></script>
+  <script src="{% static 'mixes/js/image-crop.js' %}?v={{ STATIC_VERSION }}"></script>
+  <script src="{% static 'mixes/js/tracklist-editor.js' %}?v={{ STATIC_VERSION }}"></script>
+  <script src="{% static 'mixes/js/tracklist-timestamp-editor.js' %}?v={{ STATIC_VERSION }}"></script>
+</body>
+</html>

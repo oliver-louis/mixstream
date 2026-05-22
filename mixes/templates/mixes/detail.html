@@ -1,0 +1,146 @@
+{% extends "mixes/base.html" %}
+{% block title %}{{ mix.title }} · MixStream{% endblock %}
+{% block body_class %}mix-detail-page{% endblock %}
+{% block content %}
+{% load static %}
+<article class="mix-detail" style="--mobile-cover: url('{% if mix.display_cover %}{{ mix.display_cover.url }}{% else %}{% static 'mixes/branding/defaultcover.png' %}{% endif %}');">
+  <button class="mobile-collapse" type="button" data-mobile-back aria-label="Back">⌄</button>
+  <div class="cover large">
+    {% if mix.display_cover %}
+      <img src="{{ mix.display_cover.url }}" alt="">
+    {% else %}
+      <img src="{% static 'mixes/branding/defaultcover.png' %}" alt="">
+    {% endif %}
+  </div>
+  <div class="detail-main">
+    <p class="eyebrow">{{ mix.get_visibility_display }} · {{ mix.created_at|date:"M j, Y" }}</p>
+    <div class="title-row">
+      <h1>{{ mix.title }}</h1>
+      {% if mix.primary_genre %}
+        <div class="genre-pill" tabindex="0">
+          <span>{{ mix.primary_genre.name }}</span>
+          {% if mix.additional_genres %}
+            <div class="genre-popover">
+              {% for genre in mix.additional_genres %}<span>{{ genre.name }}</span>{% endfor %}
+            </div>
+          {% endif %}
+        </div>
+      {% endif %}
+    </div>
+    <a class="artist-link" href="{{ mix.owner.profile.get_absolute_url }}">{{ mix.owner.profile.display_name }}</a>
+    <div class="current-track-list" data-current-track-list aria-hidden="true"></div>
+    {% if user == mix.owner or user.is_staff %}
+      <a class="button secondary edit-inline" href="{% url 'mixes:edit_mix' mix.pk %}">Edit mix</a>
+    {% endif %}
+    {% if tracklist_items %}
+      <button class="button secondary tracklist-toggle" type="button" data-tracklist-toggle>Track IDs</button>
+    {% endif %}
+    <button class="play-big" type="button" data-play-card aria-label="Play mix">▶</button>
+  </div>
+  <div class="waveform hero-waveform"
+       data-waveform='{{ mix.waveform|default:"[]" }}'
+       {% if mix.is_playable %}
+       data-audio-url="{% url 'mixes:stream_audio_codec' mix.pk 'opus' %}"
+       data-audio-mp3-url="{% url 'mixes:stream_audio_codec' mix.pk 'mp3' %}"
+       {% endif %}
+       data-title="{{ mix.title }}"
+       data-artist="{{ mix.owner.profile.display_name }}"
+       data-cover="{% if mix.thumb_cover %}{{ mix.thumb_cover.url }}{% else %}{% static 'mixes/branding/defaultcover.png' %}{% endif %}"
+       data-stream-url="{% url 'mixes:stream_event' mix.pk %}"
+       data-view-url="{% url 'mixes:increment_view' mix.pk %}"
+       data-detail-url="{{ mix.get_absolute_url }}"
+       data-tracklist-script="mix-tracklist-data"
+       data-duration="{{ mix.duration_seconds|default:'' }}">
+    <canvas class="wave-canvas" data-wave-canvas height="190" aria-label="Mix waveform"></canvas>
+    <div class="wave-time">
+      <span data-wave-current>0:00</span>
+      <span class="wave-time-end">
+        <span data-wave-remaining hidden>(0:00)</span>
+        <span data-wave-duration>{{ mix.formatted_duration|default:"0:00" }}</span>
+      </span>
+    </div>
+    {% if not mix.is_playable %}
+      <p class="processing-note">{{ mix.get_processing_status_display }}{% if mix.media_processing_error %}: {{ mix.media_processing_error }}{% endif %}</p>
+    {% endif %}
+  </div>
+  <div class="detail-content">
+    <div class="meta-row stats-row">
+      {% if not mix.hide_view_count or user == mix.owner or user.is_staff %}
+        <span>{{ mix.view_count }} views{% if mix.hide_view_count %} hidden{% endif %}</span>
+        <span>{{ mix.play_count }} plays</span>
+        <span>{{ mix.unique_listener_count }} listeners</span>
+      {% endif %}
+    </div>
+    <p class="description">{{ mix.description|linebreaksbr }}</p>
+    {% if tracklist_items %}
+      <section class="tracklist structured-tracklist">
+        <h2>Tracklist</h2>
+        <ol class="tracklist-list">
+          {% for item in tracklist_items %}
+            <li class="tracklist-item" id="track-id-{{ item.position|default:forloop.counter }}" data-track-id-key="{{ item.position|default:forloop.counter }}">
+              <button class="tracklist-time tracklist-time-button" type="button" data-track-seek-seconds="{{ item.start_seconds|default:0 }}">
+                {% if item.formatted_start %}
+                  {{ item.formatted_start }}{% if item.formatted_end %}-{{ item.formatted_end }}{% endif %}
+                {% else %}
+                  {{ forloop.counter }}
+                {% endif %}
+              </button>
+              <span class="tracklist-copy">
+                {% if item.artist %}<span class="tracklist-artist">{{ item.artist }}</span>{% endif %}
+                <span class="tracklist-title">{{ item.title }}</span>
+              </span>
+              {% if item.platform_links %}
+                <span class="tracklist-links">
+                  {% for link in item.platform_links %}
+                    <a class="tracklist-link tracklist-link-icon" href="{{ link.url }}" target="_blank" rel="noopener noreferrer" aria-label="{{ link.label }}" title="{{ link.label }}">
+                      <img src="{% static link.icon_path %}" alt="{{ link.label }}">
+                    </a>
+                  {% endfor %}
+                </span>
+              {% endif %}
+            </li>
+          {% endfor %}
+        </ol>
+      </section>
+    {% endif %}
+    {% if mix.tracklist_text %}
+      <section class="tracklist">
+        <h2>{% if tracklist_items %}Notes{% else %}Tracklist{% endif %}</h2>
+        <pre>{{ mix.tracklist_text }}</pre>
+      </section>
+    {% endif %}
+  </div>
+  {% if tracklist_items %}
+    <div class="mobile-tracklist-panel" data-mobile-tracklist hidden>
+      <h2>Track IDs</h2>
+      <ol class="tracklist-list">
+        {% for item in tracklist_items %}
+          <li class="tracklist-item" id="mobile-track-id-{{ item.position|default:forloop.counter }}" data-track-id-key="{{ item.position|default:forloop.counter }}">
+            <button class="tracklist-time tracklist-time-button" type="button" data-track-seek-seconds="{{ item.start_seconds|default:0 }}">
+              {% if item.formatted_start %}
+                {{ item.formatted_start }}{% if item.formatted_end %}-{{ item.formatted_end }}{% endif %}
+              {% else %}
+                {{ forloop.counter }}
+              {% endif %}
+            </button>
+            <span class="tracklist-copy">
+              {% if item.artist %}<span class="tracklist-artist">{{ item.artist }}</span>{% endif %}
+              <span class="tracklist-title">{{ item.title }}</span>
+            </span>
+            {% if item.platform_links %}
+              <span class="tracklist-links">
+                {% for link in item.platform_links %}
+                  <a class="tracklist-link tracklist-link-icon" href="{{ link.url }}" target="_blank" rel="noopener noreferrer" aria-label="{{ link.label }}" title="{{ link.label }}">
+                    <img src="{% static link.icon_path %}" alt="{{ link.label }}">
+                  </a>
+                {% endfor %}
+              </span>
+            {% endif %}
+          </li>
+        {% endfor %}
+      </ol>
+    </div>
+  {% endif %}
+</article>
+{{ tracklist_payload|json_script:"mix-tracklist-data" }}
+{% endblock %}

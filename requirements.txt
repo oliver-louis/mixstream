@@ -1,0 +1,6 @@
+Django>=5.1,<5.3
+psycopg[binary]>=3.2,<4
+gunicorn>=23,<24
+mozilla-django-oidc>=4.0,<5
+Pillow>=11,<12
+python-dotenv>=1.0,<2

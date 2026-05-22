@@ -1,0 +1,44 @@
+.git
+.DS_Store
+Thumbs.db
+
+# Secrets and local-only env files
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.vm.example
+
+# Python/local development
+.venv
+venv
+env
+__pycache__
+*.pyc
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Local databases and collected static output
+db.sqlite3
+*.sqlite3
+*.db
+staticfiles
+
+# Uploaded/generated media should never be copied into the image.
+media
+local-media
+uploads
+
+# Keep accidental large media files out of build context.
+*.mp3
+*.wav
+*.flac
+*.aiff
+*.aif
+*.m4a
+*.ogg
+*.opus
+*.aac

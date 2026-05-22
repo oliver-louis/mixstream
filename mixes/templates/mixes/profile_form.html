@@ -1,0 +1,33 @@
+{% extends "mixes/base.html" %}
+{% block title %}Edit profile · MixStream{% endblock %}
+{% block content %}
+<section class="form-layout">
+  <div>
+    <p class="eyebrow">Public profile</p>
+    <h1>Edit profile</h1>
+  </div>
+  <form method="post" enctype="multipart/form-data" class="panel-form">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {% for field in form %}
+      <label class="field checkbox-aware">
+        <span>{{ field.label }}</span>
+        {{ field }}
+        {{ field.errors }}
+      </label>
+      {% if field.name == "avatar_image" %}
+        <div class="image-select" data-image-crop data-input-id="{{ field.id_for_label }}" data-aspect="1" data-output-name="profile-photo.jpg">
+          <button class="button secondary" type="button" data-crop-open>Select image</button>
+          <span class="image-select-status" data-crop-status>No new profile photo selected</span>
+        </div>
+      {% elif field.name == "banner_image" %}
+        <div class="image-select" data-image-crop data-input-id="{{ field.id_for_label }}" data-aspect="3" data-output-name="profile-banner.jpg">
+          <button class="button secondary" type="button" data-crop-open>Select image</button>
+          <span class="image-select-status" data-crop-status>No new banner selected</span>
+        </div>
+      {% endif %}
+    {% endfor %}
+    <button class="button primary" type="submit">Save profile</button>
+  </form>
+</section>
+{% endblock %}

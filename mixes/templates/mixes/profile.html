@@ -1,0 +1,28 @@
+{% extends "mixes/base.html" %}
+{% block title %}{{ profile_obj.display_name }} · MixStream{% endblock %}
+{% block content %}
+<section class="profile-head"{% if profile_obj.banner_image %} style="--profile-banner: url('{{ profile_obj.banner_image.url }}');"{% endif %}>
+  <div class="avatar">
+    {% if profile_obj.avatar_image %}
+      <img src="{{ profile_obj.avatar_image.url }}" alt="">
+    {% else %}
+      {{ profile_obj.display_name|first|upper }}
+    {% endif %}
+  </div>
+  <div>
+    <p class="eyebrow">Artist page</p>
+    <h1>{{ profile_obj.display_name }}</h1>
+    {% if profile_obj.bio %}<p>{{ profile_obj.bio }}</p>{% endif %}
+    {% if user == profile_obj.user %}
+      <a class="button secondary" href="{% url 'mixes:edit_profile' %}">Edit profile</a>
+    {% endif %}
+  </div>
+</section>
+<div class="mix-list">
+  {% for mix in mixes %}
+    {% include "mixes/partials/mix_card.html" %}
+  {% empty %}
+    <p class="empty">No visible mixes here yet.</p>
+  {% endfor %}
+</div>
+{% endblock %}

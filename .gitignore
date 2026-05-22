@@ -1,0 +1,46 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+!.env.local.example
+!.env.vm.example
+
+# Local databases and runtime state
+*.sqlite3
+db.sqlite3
+*.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.python-version
+.venv/
+venv/
+env/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Django/static build output
+staticfiles/
+
+# Uploaded/generated media. Keep real tracks, covers, profile images, banners,
+# and processed derivatives out of the public repo.
+media/
+local-media/
+uploads/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Docker/local logs
+*.log
+logs/

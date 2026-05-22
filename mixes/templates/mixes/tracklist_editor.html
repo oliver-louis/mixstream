@@ -1,0 +1,123 @@
+{% extends "mixes/base.html" %}
+{% block title %}Track IDs · {{ mix.title }} · MixStream{% endblock %}
+{% block body_class %}tracklist-editor-page{% endblock %}
+{% block content %}
+<section
+  class="timestamp-editor"
+  data-timestamp-editor
+  data-waveform='{{ mix.waveform|default:"[]" }}'
+  data-import-url="{% url 'mixes:tracklist_import_file' mix.pk %}"
+  data-export-json-url="{% url 'mixes:tracklist_export_file' mix.pk 'json' %}"
+  data-export-txt-url="{% url 'mixes:tracklist_export_file' mix.pk 'txt' %}"
+  {% if mix.is_playable %}
+  data-audio-url="{% url 'mixes:stream_audio_codec' mix.pk 'opus' %}"
+  data-audio-mp3-url="{% url 'mixes:stream_audio_codec' mix.pk 'mp3' %}"
+  {% endif %}
+  data-duration="{{ mix.duration_seconds|default:'' }}"
+>
+  <div class="timestamp-editor-head">
+    <div>
+      <p class="eyebrow">Track IDs</p>
+      <h1>{{ mix.title }}</h1>
+      <p class="timestamp-editor-subtitle">Scrub the waveform, select a row, and stamp start or end points directly into the existing Track ID system.</p>
+    </div>
+    <div class="timestamp-editor-nav">
+      <a class="button secondary" href="{% url 'mixes:edit_mix' mix.pk %}">Back to mix</a>
+    </div>
+  </div>
+
+  <form method="post" class="timestamp-editor-form">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {{ form.tracklist_json }}
+    {{ form.tracklist_json.errors }}
+
+    <section class="timestamp-stage panel-form">
+      <div class="timestamp-stage-head">
+        <div>
+          <strong>Waveform editor</strong>
+          {% if mix.is_playable %}
+            <small>Click or drag to scrub. Use arrow keys to nudge the playhead.</small>
+          {% else %}
+            <small>Audio is still processing. You can edit labels now; timestamp controls unlock once playback is ready.</small>
+          {% endif %}
+        </div>
+        <div class="timestamp-transport">
+          <button class="transport-button" type="button" data-editor-back aria-label="Back 5 seconds" {% if not mix.is_playable %}disabled{% endif %}>‹</button>
+          <button class="transport-button" type="button" data-editor-play aria-label="Play or pause" {% if not mix.is_playable %}disabled{% endif %}>▶</button>
+          <button class="transport-button" type="button" data-editor-forward aria-label="Forward 5 seconds" {% if not mix.is_playable %}disabled{% endif %}>›</button>
+          <div class="timestamp-timebox">
+            <span data-editor-current>0:00</span>
+            <span data-editor-duration>{{ mix.formatted_duration|default:"0:00" }}</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="timestamp-wave-shell{% if not mix.is_playable %} is-disabled{% endif %}">
+        <canvas class="timestamp-wave-canvas" data-editor-canvas height="154" aria-label="Track ID waveform editor"></canvas>
+        {% if not mix.is_playable %}
+          <p class="processing-note">Processing audio. Playback and waveform timestamping become available when the optimized mix files are ready.</p>
+        {% endif %}
+      </div>
+      <audio data-editor-audio preload="metadata"></audio>
+    </section>
+
+    <section class="timestamp-rows panel-form">
+      <div class="timestamp-rows-head">
+        <div>
+          <strong>Track list</strong>
+          <small>Select a row, then set start or end from the current playhead.</small>
+        </div>
+        <div class="tracklist-editor-actions">
+          <button class="button secondary" type="button" data-editor-import-file>Import file</button>
+          <details class="export-dropdown">
+            <summary class="button secondary">Export</summary>
+            <div class="export-dropdown-menu">
+              <a href="{% url 'mixes:tracklist_export_file' mix.pk 'json' %}">JSON</a>
+              <a href="{% url 'mixes:tracklist_export_file' mix.pk 'txt' %}">TXT</a>
+            </div>
+          </details>
+          <button class="button secondary" type="button" data-editor-add-row>Add track</button>
+        </div>
+      </div>
+      <input type="file" accept=".json,.txt,application/json,text/plain" hidden data-editor-file-input>
+      <div class="timestamp-row-list" data-editor-rows></div>
+      <template data-editor-row-template>
+        <article class="timestamp-row" data-editor-row>
+          <button class="timestamp-row-select" type="button" data-row-select>
+            <span class="timestamp-chip" data-row-start>Start unset</span>
+            <span class="timestamp-chip" data-row-end>End unset</span>
+          </button>
+          <div class="timestamp-row-fields">
+            <label><span>Artist</span><input type="text" data-row-artist placeholder="Artist"></label>
+            <label><span>Track</span><input type="text" data-row-title placeholder="Track title"></label>
+            <div class="tracklist-links-editor tracklist-links-editor-wide" data-row-links-editor>
+              <span>Links</span>
+              <div class="tracklist-link-chip-list" data-row-link-list></div>
+              <div class="tracklist-link-input-row">
+                <input type="url" data-row-link-input placeholder="Paste Discogs, Bandcamp, SoundCloud, YouTube, or Spotify URL">
+                <button class="button secondary" type="button" data-row-link-add>Add link</button>
+              </div>
+              <small class="tracklist-link-feedback" data-row-link-feedback></small>
+            </div>
+          </div>
+          <div class="timestamp-row-actions">
+            <button class="button secondary" type="button" data-row-set-start>Set start</button>
+            <button class="button secondary" type="button" data-row-set-end>Set end</button>
+            <button class="button secondary" type="button" data-row-clear-end>Clear end</button>
+            <button class="icon-button" type="button" data-row-remove aria-label="Remove track ID">×</button>
+          </div>
+        </article>
+      </template>
+    </section>
+
+    <div class="timestamp-editor-footer">
+      <p class="timestamp-editor-note">Saving here updates the same structured Track IDs used on the mix page and in the player.</p>
+      <div class="timestamp-editor-footer-actions">
+        <a class="button secondary" href="{% url 'mixes:edit_mix' mix.pk %}">Cancel</a>
+        <button class="button primary" type="submit">Save Track IDs</button>
+      </div>
+    </div>
+  </form>
+</section>
+{% endblock %}

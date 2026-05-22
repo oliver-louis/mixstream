@@ -1,0 +1,119 @@
+{% extends "mixes/base.html" %}
+{% block title %}{{ title }} · MixStream{% endblock %}
+{% block content %}
+<section class="form-layout">
+  <div>
+    <p class="eyebrow">Mix details</p>
+    <h1>{{ title }}</h1>
+  </div>
+  <form method="post" enctype="multipart/form-data" class="panel-form">
+    {% csrf_token %}
+    {{ form.non_field_errors }}
+    {% for field in form %}
+      {% if field.name == "tracklist_json" %}
+        {{ field }}
+        {{ field.errors }}
+      {% elif field.name == "tracklist_import" %}
+        <section
+          class="tracklist-editor"
+          data-tracklist-editor
+          data-hidden-input-id="{{ form.tracklist_json.id_for_label }}"
+          {% if mix.pk %}
+            data-import-url="{% url 'mixes:tracklist_import_file' mix.pk %}"
+            data-export-json-url="{% url 'mixes:tracklist_export_file' mix.pk 'json' %}"
+            data-export-txt-url="{% url 'mixes:tracklist_export_file' mix.pk 'txt' %}"
+          {% endif %}
+        >
+          <div class="tracklist-editor-head">
+            <div>
+              <span>Track IDs</span>
+              <small>Optional. Add rows manually or import loose DJ-style lines.</small>
+            </div>
+            <div class="tracklist-editor-actions">
+              <button class="button secondary" type="button" data-tracklist-import-file>Import file</button>
+              {% if mix.pk %}
+                <details class="export-dropdown">
+                  <summary class="button secondary">Export</summary>
+                  <div class="export-dropdown-menu">
+                    <a href="{% url 'mixes:tracklist_export_file' mix.pk 'json' %}">JSON</a>
+                    <a href="{% url 'mixes:tracklist_export_file' mix.pk 'txt' %}">TXT</a>
+                  </div>
+                </details>
+              {% else %}
+                <button class="button secondary" type="button" disabled title="Save the mix first to export Track ID files.">Export</button>
+              {% endif %}
+              {% if mix.pk %}
+                <a class="button secondary" href="{% url 'mixes:tracklist_editor' mix.pk %}">Interactive editor</a>
+              {% else %}
+                <button class="button secondary" type="button" disabled title="Save the mix first to open the interactive Track ID editor.">Interactive editor</button>
+              {% endif %}
+              <button class="button secondary" type="button" data-tracklist-add>Add row</button>
+            </div>
+          </div>
+          <input type="file" accept=".json,.txt,application/json,text/plain" hidden data-tracklist-file-input>
+          {% if not mix.pk %}
+            <p class="tracklist-editor-note">Save the mix first to open the interactive Track ID editor.</p>
+          {% endif %}
+          <div class="tracklist-rows" data-tracklist-rows></div>
+          <template data-tracklist-template>
+            <div class="tracklist-row" data-tracklist-row>
+              <label><span>Start</span><input type="text" data-tracklist-start placeholder="12:34"></label>
+              <label><span>End</span><input type="text" data-tracklist-end placeholder="18:20"></label>
+              <label><span>Artist</span><input type="text" data-tracklist-artist placeholder="Artist"></label>
+              <label><span>Track</span><input type="text" data-tracklist-title placeholder="Track title"></label>
+              <div class="tracklist-links-editor" data-tracklist-links-editor>
+                <span>Links</span>
+                <div class="tracklist-link-chip-list" data-tracklist-link-list></div>
+                <div class="tracklist-link-input-row">
+                  <input type="url" data-tracklist-link-input placeholder="Paste Discogs, Bandcamp, SoundCloud, YouTube, or Spotify URL">
+                  <button class="button secondary" type="button" data-tracklist-link-add>Add link</button>
+                </div>
+                <small class="tracklist-link-feedback" data-tracklist-link-feedback></small>
+              </div>
+              <button class="icon-button" type="button" data-tracklist-remove aria-label="Remove track ID">×</button>
+            </div>
+          </template>
+          <details class="tracklist-import">
+            <summary>Paste/import lines</summary>
+            <label class="field">
+              <span>{{ field.label }}</span>
+              {{ field }}
+              {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+              {{ field.errors }}
+            </label>
+            <button class="button secondary" type="button" data-tracklist-import>Import lines</button>
+          </details>
+        </section>
+      {% else %}
+        <label class="field">
+          <span>{{ field.label }}</span>
+          {{ field }}
+          {% if field.help_text %}<small>{{ field.help_text }}</small>{% endif %}
+          {{ field.errors }}
+        </label>
+        {% if field.name == "short_url_enabled" %}
+          <div class="short-share-panel">
+            {% if mix.pk %}
+              {% if mix.short_share_url_active %}
+                <small>Short share URL</small>
+                <a class="short-share-link" href="{{ mix.get_short_share_url }}">{{ short_share_url }}</a>
+              {% else %}
+                <small>Save with this enabled to create a root-level short share URL for this non-public mix.</small>
+              {% endif %}
+            {% else %}
+              <small>After the mix is saved, MixStream will generate a root-level short share URL from the title.</small>
+            {% endif %}
+          </div>
+        {% endif %}
+        {% if field.name == "cover_image" %}
+          <div class="image-select" data-image-crop data-input-id="{{ field.id_for_label }}" data-aspect="1" data-output-name="cover.jpg">
+            <button class="button secondary" type="button" data-crop-open>Select image</button>
+            <span class="image-select-status" data-crop-status>No new image selected</span>
+          </div>
+        {% endif %}
+      {% endif %}
+    {% endfor %}
+    <button class="button primary" type="submit">Save mix</button>
+  </form>
+</section>
+{% endblock %}

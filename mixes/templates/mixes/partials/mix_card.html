@@ -1,0 +1,56 @@
+{% load static %}
+<article class="mix-card">
+  <a class="cover" href="{{ mix.get_absolute_url }}">
+    {% if mix.thumb_cover %}
+      <img src="{{ mix.thumb_cover.url }}" alt="" loading="lazy">
+    {% else %}
+      <img src="{% static 'mixes/branding/defaultcover.png' %}" alt="" loading="lazy">
+    {% endif %}
+  </a>
+  <div class="mix-card-body">
+    <div class="mix-card-top">
+      <button class="play-small" type="button"
+              {% if mix.is_playable %}
+              data-audio-url="{% url 'mixes:stream_audio_codec' mix.pk 'opus' %}"
+              data-audio-mp3-url="{% url 'mixes:stream_audio_codec' mix.pk 'mp3' %}"
+              {% endif %}
+              data-title="{{ mix.title }}"
+              data-artist="{{ mix.owner.profile.display_name }}"
+              data-cover="{% if mix.thumb_cover %}{{ mix.thumb_cover.url }}{% else %}{% static 'mixes/branding/defaultcover.png' %}{% endif %}"
+              data-stream-url="{% url 'mixes:stream_event' mix.pk %}"
+              data-detail-url="{{ mix.get_absolute_url }}"
+              data-duration="{{ mix.duration_seconds|default:'' }}"
+              {% if not mix.is_playable %}disabled title="{{ mix.get_processing_status_display }}"{% endif %}
+              aria-label="Play {{ mix.title }}">▶</button>
+      <div>
+        <h3><a href="{{ mix.get_absolute_url }}">{{ mix.title }}</a></h3>
+        <a class="artist-link" href="{{ mix.owner.profile.get_absolute_url }}">{{ mix.owner.profile.display_name }}</a>
+      </div>
+    </div>
+    <div class="mini-wave"
+         data-waveform='{{ mix.waveform|default:"[]" }}'
+         {% if mix.is_playable %}
+         data-audio-url="{% url 'mixes:stream_audio_codec' mix.pk 'opus' %}"
+         data-audio-mp3-url="{% url 'mixes:stream_audio_codec' mix.pk 'mp3' %}"
+         {% endif %}
+         data-title="{{ mix.title }}"
+         data-artist="{{ mix.owner.profile.display_name }}"
+         data-cover="{% if mix.thumb_cover %}{{ mix.thumb_cover.url }}{% else %}{% static 'mixes/branding/defaultcover.png' %}{% endif %}"
+         data-stream-url="{% url 'mixes:stream_event' mix.pk %}"
+         data-detail-url="{{ mix.get_absolute_url }}"
+         data-duration="{{ mix.duration_seconds|default:'' }}">
+      <canvas class="wave-canvas" data-wave-canvas height="76" aria-label="Mix waveform"></canvas>
+    </div>
+    <p>{{ mix.description|truncatechars:130 }}</p>
+    <div class="meta-row">
+      <span>{{ mix.created_at|date:"M j, Y" }}</span>
+      <span>{{ mix.get_visibility_display }}</span>
+      <span>{{ mix.get_processing_status_display }}</span>
+      {% if mix.formatted_duration %}<span>{{ mix.formatted_duration }}</span>{% endif %}
+      {% if not mix.hide_view_count or user == mix.owner or user.is_staff %}
+        <span>{{ mix.view_count }} views{% if mix.hide_view_count %} hidden{% endif %}</span>
+        <span>{{ mix.play_count }} plays</span>
+      {% endif %}
+    </div>
+  </div>
+</article>

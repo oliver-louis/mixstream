@@ -1,0 +1,18 @@
+{% extends "mixes/base.html" %}
+{% block title %}Your library · MixStream{% endblock %}
+{% block content %}
+<section class="section-head with-action">
+  <div>
+    <p class="eyebrow">Signed in</p>
+    <h1>Your mixes and shares</h1>
+  </div>
+  <a class="button primary" href="{% url 'mixes:upload' %}">Upload</a>
+</section>
+<div class="mix-list">
+  {% for mix in mixes %}
+    {% include "mixes/partials/mix_card.html" %}
+  {% empty %}
+    <p class="empty">No mixes are visible to you yet.</p>
+  {% endfor %}
+</div>
+{% endblock %}
