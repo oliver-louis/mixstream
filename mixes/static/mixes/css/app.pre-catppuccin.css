@@ -46,11 +46,14 @@ img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .nav {
   gap: 8px;
   overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
   white-space: nowrap;
   color: #c9c3bd;
   font-size: 14px;
   font-weight: 800;
 }
+.nav::-webkit-scrollbar { display: none; }
 .nav a, .nav button {
   display: inline-flex;
   align-items: center;
@@ -60,7 +63,7 @@ img { display: block; width: 100%; height: 100%; object-fit: cover; }
   border: 1px solid transparent;
   border-radius: 8px;
   opacity: .92;
-  transition: background-color .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease, transform .16s ease;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease, box-shadow .16s ease;
 }
 .nav a:hover, .nav button:hover {
   color: #fff;
@@ -68,7 +71,6 @@ img { display: block; width: 100%; height: 100%; object-fit: cover; }
   border-color: rgba(255,255,255,.16);
   opacity: 1;
 }
-.nav a:active, .nav button:active { transform: translateY(1px); }
 .logout-form { margin: 0; }
 .nav button {
   appearance: none;
