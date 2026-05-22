@@ -198,7 +198,13 @@ DJMIX_INTERNAL_MEDIA_PREFIX = env("DJMIX_INTERNAL_MEDIA_PREFIX", "/protected-med
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 USE_X_FORWARDED_HOST = env_bool("USE_X_FORWARDED_HOST", True)
 SESSION_COOKIE_SECURE = env_bool("SESSION_COOKIE_SECURE", not DEBUG)
+SESSION_COOKIE_HTTPONLY = env_bool("SESSION_COOKIE_HTTPONLY", True)
+SESSION_COOKIE_SAMESITE = env("SESSION_COOKIE_SAMESITE", "Lax")
+SESSION_COOKIE_AGE = env_int("SESSION_COOKIE_AGE", 60 * 60 * 24 * 7)
+SESSION_SAVE_EVERY_REQUEST = env_bool("SESSION_SAVE_EVERY_REQUEST", False)
+SESSION_EXPIRE_AT_BROWSER_CLOSE = env_bool("SESSION_EXPIRE_AT_BROWSER_CLOSE", False)
 CSRF_COOKIE_SECURE = env_bool("CSRF_COOKIE_SECURE", not DEBUG)
+CSRF_COOKIE_SAMESITE = env("CSRF_COOKIE_SAMESITE", "Lax")
 SECURE_SSL_REDIRECT = env_bool("SECURE_SSL_REDIRECT", False)
 SECURE_HSTS_SECONDS = env_int("SECURE_HSTS_SECONDS", 0)
 SECURE_HSTS_INCLUDE_SUBDOMAINS = env_bool("SECURE_HSTS_INCLUDE_SUBDOMAINS", False)
@@ -210,6 +216,10 @@ if not DEBUG:
         raise ImproperlyConfigured("SESSION_COOKIE_SECURE must be true when DJANGO_DEBUG=false.")
     if CSRF_COOKIE_SECURE is not True:
         raise ImproperlyConfigured("CSRF_COOKIE_SECURE must be true when DJANGO_DEBUG=false.")
+    if SESSION_COOKIE_HTTPONLY is not True:
+        raise ImproperlyConfigured("SESSION_COOKIE_HTTPONLY must be true when DJANGO_DEBUG=false.")
+    if SESSION_COOKIE_AGE <= 0:
+        raise ImproperlyConfigured("SESSION_COOKIE_AGE must be a positive number of seconds.")
     if not OIDC_ENABLED:
         raise ImproperlyConfigured("OIDC_ENABLED must be true when DJANGO_DEBUG=false.")
     for oidc_name in (

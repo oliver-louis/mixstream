@@ -688,3 +688,57 @@ class AuthentikOIDCBackendTests(TestCase):
         self.assertTrue(synced.is_active)
         self.assertTrue(synced.is_staff)
         self.assertTrue(synced.is_superuser)
+
+    @override_settings(DJMIX_REQUIRE_GROUP=False)
+    def test_profile_uses_authentik_username_for_display_name_and_slug(self):
+        user = User.objects.create_user(username="old", email="dj@example.com")
+        user.profile.display_name = "Dee Jay"
+        user.profile.slug = "dee-jay"
+        user.profile.save(update_fields=["display_name", "slug"])
+        backend = AuthentikOIDCBackend()
+
+        backend.update_user(user, self.claims(preferred_username="olouis"))
+
+        user.profile.refresh_from_db()
+        self.assertEqual(user.profile.display_name, "olouis")
+        self.assertEqual(user.profile.slug, "olouis")
+
+    @override_settings(DJMIX_REQUIRE_GROUP=False)
+    def test_profile_slug_gets_suffix_when_authentik_username_is_taken(self):
+        existing = User.objects.create_user(username="existing", email="existing@example.com")
+        existing.profile.slug = "olouis"
+        existing.profile.save(update_fields=["slug"])
+        user = User.objects.create_user(username="old", email="dj@example.com")
+        backend = AuthentikOIDCBackend()
+
+        backend.update_user(user, self.claims(preferred_username="olouis"))
+
+        user.profile.refresh_from_db()
+        self.assertEqual(user.profile.display_name, "olouis")
+        self.assertEqual(user.profile.slug, "olouis-2")
+
+    @override_settings(DJMIX_REQUIRE_GROUP=False)
+    def test_profile_sync_keeps_intentional_profile_edits(self):
+        user = User.objects.create_user(username="old", email="dj@example.com")
+        user.profile.display_name = "Custom Name"
+        user.profile.slug = "custom-handle"
+        user.profile.save(update_fields=["display_name", "slug"])
+        backend = AuthentikOIDCBackend()
+
+        backend.update_user(user, self.claims(preferred_username="olouis"))
+
+        user.profile.refresh_from_db()
+        self.assertEqual(user.profile.display_name, "Custom Name")
+        self.assertEqual(user.profile.slug, "custom-handle")
+
+
+class LogoutTests(TestCase):
+    def test_logout_clears_local_session(self):
+        user = User.objects.create_user(username="dj", email="dj@example.com", password="password")
+        self.client.login(username="dj", password="password")
+        self.assertIn("_auth_user_id", self.client.session)
+
+        response = self.client.post(reverse("mixes:logout"))
+
+        self.assertRedirects(response, reverse("mixes:home"))
+        self.assertNotIn("_auth_user_id", self.client.session)

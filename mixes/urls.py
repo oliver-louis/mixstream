@@ -9,6 +9,7 @@ urlpatterns = [
     path("", views.home, name="home"),
     path("health/", views.health, name="health"),
     path("login/", views.login_start, name="login"),
+    path("logout/", views.AppLogoutView.as_view(), name="logout"),
     path("library/", views.library, name="library"),
     path("upload/", views.upload, name="upload"),
     path("profile/edit/", views.edit_profile, name="edit_profile"),

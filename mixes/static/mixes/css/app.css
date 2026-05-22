@@ -73,8 +73,18 @@ select:focus-visible {
   object-fit: contain;
 }
 .nav { overflow-x: auto; white-space: nowrap; color: var(--subtle); font-size: 15px; font-weight: 750; }
-.nav a { opacity: .9; }
-.nav a:hover { color: var(--sky); opacity: 1; }
+.nav a, .nav button { opacity: .9; }
+.nav a:hover, .nav button:hover { color: var(--sky); opacity: 1; }
+.logout-form { margin: 0; }
+.nav button {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
 .upload-link { color: var(--accent); opacity: 1; }
 
 .shell {

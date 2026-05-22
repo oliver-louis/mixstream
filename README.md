@@ -136,6 +136,7 @@ Recommended production basics:
 - Set `DJANGO_ALLOWED_HOSTS` to your public hostname.
 - Set `DJANGO_CSRF_TRUSTED_ORIGINS` to your public `https://` origin.
 - Set `SESSION_COOKIE_SECURE=true` and `CSRF_COOKIE_SECURE=true`.
+- Keep `SESSION_COOKIE_HTTPONLY=true`; sessions expire after `SESSION_COOKIE_AGE` seconds, which defaults to 7 days.
 - Keep Postgres internal to the Compose network.
 - Back up both Postgres and the media folder.
 
@@ -156,6 +157,8 @@ In authentik, add the callback URL:
 ```text
 https://your-mixstream-host/oidc/callback/
 ```
+
+The in-app logout button clears the MixStream session. If the browser is still signed in to authentik, pressing log in again may immediately create a new MixStream session, which is normal SSO behavior.
 
 Production mode intentionally refuses to start with placeholder secrets, wildcard hosts, missing CSRF origins, missing database config, insecure cookies, or missing OIDC settings.
 
