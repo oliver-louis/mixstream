@@ -5,6 +5,7 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from tempfile import TemporaryDirectory
 
+from mixes.auth import AuthentikOIDCBackend
 from mixes.management.commands.process_mix_media import Command
 from .forms import parse_tracklist_json_file, parse_tracklist_text, parse_tracklist_upload, tracklist_to_json_payload, tracklist_to_text
 from .models import Genre, Mix, MixStreamEvent, MixTracklistItem, MixViewEvent
@@ -638,3 +639,52 @@ class MixProcessingTests(TestCase):
         self.assertEqual(mix.opus_file.name, "mixes/processed/1/test.opus")
         self.assertEqual(mix.mp3_file.name, "mixes/processed/1/test.mp3")
         self.assertTrue(mix.media_processed_at)
+
+
+class AuthentikOIDCBackendTests(TestCase):
+    def claims(self, **overrides):
+        data = {
+            "email": "dj@example.com",
+            "preferred_username": "dj",
+            "given_name": "Dee",
+            "family_name": "Jay",
+            "groups": [],
+        }
+        data.update(overrides)
+        return data
+
+    @override_settings(DJMIX_REQUIRE_GROUP=False)
+    def test_user_is_active_when_group_requirement_is_disabled(self):
+        user = User.objects.create_user(username="old", email="dj@example.com", is_active=False)
+        backend = AuthentikOIDCBackend()
+
+        synced = backend.update_user(user, self.claims(groups=[]))
+
+        synced.refresh_from_db()
+        self.assertTrue(synced.is_active)
+        self.assertFalse(synced.is_staff)
+        self.assertFalse(synced.is_superuser)
+
+    @override_settings(DJMIX_REQUIRE_GROUP=True, DJMIX_USER_GROUP="djmix-users", DJMIX_ADMIN_GROUP="djmix-admins")
+    def test_user_group_keeps_user_active_without_admin_privileges(self):
+        user = User.objects.create_user(username="old", email="dj@example.com", is_active=False)
+        backend = AuthentikOIDCBackend()
+
+        synced = backend.update_user(user, self.claims(groups=["djmix-users"]))
+
+        synced.refresh_from_db()
+        self.assertTrue(synced.is_active)
+        self.assertFalse(synced.is_staff)
+        self.assertFalse(synced.is_superuser)
+
+    @override_settings(DJMIX_REQUIRE_GROUP=True, DJMIX_USER_GROUP="djmix-users", DJMIX_ADMIN_GROUP="djmix-admins")
+    def test_admin_group_grants_staff_and_superuser(self):
+        user = User.objects.create_user(username="old", email="dj@example.com", is_active=False)
+        backend = AuthentikOIDCBackend()
+
+        synced = backend.update_user(user, self.claims(groups=["djmix-admins"]))
+
+        synced.refresh_from_db()
+        self.assertTrue(synced.is_active)
+        self.assertTrue(synced.is_staff)
+        self.assertTrue(synced.is_superuser)

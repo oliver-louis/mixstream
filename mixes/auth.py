@@ -34,7 +34,7 @@ class AuthentikOIDCBackend(OIDCAuthenticationBackend):
         user.username = username or user.username
         user.first_name = claims.get("given_name") or user.first_name
         user.last_name = claims.get("family_name") or user.last_name
-        user.is_active = settings.DJMIX_ADMIN_GROUP in groups or settings.DJMIX_USER_GROUP in groups
+        user.is_active = not settings.DJMIX_REQUIRE_GROUP or settings.DJMIX_ADMIN_GROUP in groups or settings.DJMIX_USER_GROUP in groups
         user.is_staff = settings.DJMIX_ADMIN_GROUP in groups
         user.is_superuser = settings.DJMIX_ADMIN_GROUP in groups
         user.save()
