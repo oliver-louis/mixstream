@@ -1,4 +1,5 @@
 from pathlib import Path
+import shutil
 from uuid import uuid4
 
 from django.conf import settings
@@ -112,6 +113,7 @@ class Mix(models.Model):
 
     class ProcessingStatus(models.TextChoices):
         PENDING = "pending", "Pending"
+        PROCESSING = "processing", "Processing"
         READY = "ready", "Ready"
         FAILED = "failed", "Failed"
 
@@ -284,6 +286,44 @@ class MixTracklistItem(models.Model):
             "start": self.formatted_start,
             "end": self.formatted_end,
         }
+
+
+class UploadSession(models.Model):
+    class Status(models.TextChoices):
+        UPLOADING = "uploading", "Uploading"
+        COMPLETED = "completed", "Completed"
+        ABORTED = "aborted", "Aborted"
+
+    owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="upload_sessions")
+    upload_id = models.UUIDField(default=uuid4, unique=True, editable=False)
+    filename = models.CharField(max_length=255)
+    content_type = models.CharField(max_length=120, blank=True)
+    total_size = models.PositiveBigIntegerField()
+    chunk_size = models.PositiveIntegerField()
+    total_chunks = models.PositiveIntegerField()
+    received_chunks = models.JSONField(default=list, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    cover_temp_path = models.CharField(max_length=500, blank=True)
+    status = models.CharField(max_length=16, choices=Status.choices, default=Status.UPLOADING)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["owner", "status", "-created_at"], name="upload_session_owner_idx"),
+            models.Index(fields=["status", "created_at"], name="upload_session_cleanup_idx"),
+        ]
+
+    @property
+    def upload_dir(self):
+        return Path(settings.MEDIA_ROOT) / "tmp" / "uploads" / str(self.upload_id)
+
+    def chunk_path(self, index):
+        return self.upload_dir / f"{index:06d}.part"
+
+    def discard_files(self):
+        shutil.rmtree(self.upload_dir, ignore_errors=True)
 
 
 class MixViewEvent(models.Model):

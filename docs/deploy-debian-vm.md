@@ -188,3 +188,24 @@ When you are ready to put Nginx Proxy Manager in front of the app:
 7. Switch `DJANGO_DEBUG=false` only after all production values are filled in.
 
 Production mode intentionally refuses placeholder secrets, missing OIDC settings, missing `DATABASE_URL`, wildcard hosts, or insecure cookies.
+
+## Later: Cloudflare Proxy
+
+Cloudflare Proxy works for MixStream pages, OIDC login, admin, public profiles, and playback, but the free plan limits each proxied request body to 100 MB. MixStream's upload page uses chunked audio uploads so large mixes can still upload through Cloudflare. Keep `DJMIX_MAX_CHUNK_BYTES` at or below `99614720` unless your proxy path supports larger requests.
+
+Recommended setup:
+
+1. Proxy the public hostname to Nginx Proxy Manager on standard HTTPS `443`; do not expose `:8081` publicly.
+2. Use Full (strict) TLS with a valid certificate at NPM/origin.
+3. Set `DJANGO_ALLOWED_HOSTS` to the Cloudflare hostname.
+4. Set `DJANGO_CSRF_TRUSTED_ORIGINS=https://your-hostname`.
+5. Set the authentik redirect URI to `https://your-hostname/oidc/callback/`.
+6. If port-forwarding instead of using Cloudflare Tunnel, firewall the origin to Cloudflare IP ranges where practical.
+
+Smoke test after enabling Cloudflare:
+
+```sh
+docker compose exec app python -c "import socket, ssl; h='auth.example.com'; print(socket.getaddrinfo(h,443)); ctx=ssl.create_default_context(); s=socket.create_connection((h,443),timeout=10); ss=ctx.wrap_socket(s,server_hostname=h); print('TLS OK', ss.version()); ss.close()"
+```
+
+Then test login, an upload larger than 100 MB, playback seeking, anonymous public mix access, and private audio blocked while logged out.

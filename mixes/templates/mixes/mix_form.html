@@ -6,7 +6,16 @@
     <p class="eyebrow">Mix details</p>
     <h1>{{ title }}</h1>
   </div>
-  <form method="post" enctype="multipart/form-data" class="panel-form">
+  <form method="post" enctype="multipart/form-data" class="panel-form"
+    {% if chunked_upload %}
+      data-chunked-upload
+      data-chunk-start-url="{% url 'mixes:chunked_upload_start' %}"
+      data-chunk-url-template="{% url 'mixes:chunked_upload_chunk' '00000000-0000-0000-0000-000000000000' %}"
+      data-chunk-complete-url-template="{% url 'mixes:chunked_upload_complete' '00000000-0000-0000-0000-000000000000' %}"
+      data-chunk-abort-url-template="{% url 'mixes:chunked_upload_abort' '00000000-0000-0000-0000-000000000000' %}"
+      data-chunk-size="52428800"
+    {% endif %}
+  >
     {% csrf_token %}
     {{ form.non_field_errors }}
     {% for field in form %}
@@ -113,6 +122,12 @@
         {% endif %}
       {% endif %}
     {% endfor %}
+    {% if chunked_upload %}
+      <div class="upload-progress" data-upload-progress hidden>
+        <div class="upload-progress-bar"><span data-upload-progress-fill></span></div>
+        <small data-upload-progress-status>Preparing upload...</small>
+      </div>
+    {% endif %}
     <button class="button primary" type="submit">Save mix</button>
   </form>
 </section>

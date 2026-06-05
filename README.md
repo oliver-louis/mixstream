@@ -162,6 +162,31 @@ The in-app logout button clears the MixStream session. If the browser is still s
 
 Production mode intentionally refuses to start with placeholder secrets, wildcard hosts, missing CSRF origins, missing database config, insecure cookies, or missing OIDC settings.
 
+## Cloudflare Proxy
+
+MixStream can run behind Cloudflare Proxy on a free account for normal pages, OIDC login, admin, public profiles, and playback. The important limitation is upload size: Cloudflare Free limits each proxied request body to 100 MB, so MixStream uses chunked audio uploads from the upload page. The default browser chunk size is 50 MB and the server rejects chunks larger than `DJMIX_MAX_CHUNK_BYTES`:
+
+```env
+DJMIX_MAX_CHUNK_BYTES=99614720
+```
+
+Recommended Cloudflare setup:
+
+- Point the proxied hostname at your reverse proxy on standard HTTPS `443`; do not expose `:8081` as the public URL.
+- Use Full (strict) TLS where possible, with a valid certificate at the origin/reverse proxy.
+- Set `DJANGO_ALLOWED_HOSTS` to the public hostname and `DJANGO_CSRF_TRUSTED_ORIGINS` to its `https://` origin.
+- Use the public hostname for the authentik redirect URI, for example `https://mix.example.com/oidc/callback/`.
+- If you port-forward to your origin, firewall the origin to Cloudflare IP ranges where practical. Cloudflare hides DNS answers, but exposed origin services can still reveal an IP through other paths.
+- Cloudflare Tunnel can avoid inbound port forwarding, but proxied HTTP request size limits still apply.
+
+Smoke tests after enabling Cloudflare:
+
+```sh
+docker compose exec app python -c "import socket, ssl; h='auth.example.com'; print(socket.getaddrinfo(h,443)); ctx=ssl.create_default_context(); s=socket.create_connection((h,443),timeout=10); ss=ctx.wrap_socket(s,server_hostname=h); print('TLS OK', ss.version()); ss.close()"
+```
+
+Then test login, upload a file larger than 100 MB, seek during playback, load a public mix anonymously, and confirm a private mix/audio URL is blocked when logged out.
+
 ## Updating
 
 If you deployed from Git:
@@ -200,6 +225,12 @@ Reprocess all media derivatives:
 
 ```sh
 docker compose exec worker python manage.py process_mix_media --all --once
+```
+
+Clean abandoned chunked upload files:
+
+```sh
+docker compose exec app python manage.py cleanup_upload_sessions
 ```
 
 Check resource use:

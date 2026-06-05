@@ -37,6 +37,11 @@ TRACKLIST_LINE_PATTERN = re.compile(
 URL_PATTERN = re.compile(r"https?://\S+", re.IGNORECASE)
 TRACKLIST_JSON_CONTENT_TYPES = {"application/json", "text/json", "application/octet-stream"}
 TRACKLIST_TEXT_CONTENT_TYPES = {"text/plain", "application/octet-stream"}
+SUPPORTED_AUDIO_HEADER_PREFIXES = (b"ID3", b"\xff", b"RIFF", b"fLaC", b"FORM", b"OggS")
+
+
+def audio_header_looks_supported(header):
+    return header.startswith(SUPPORTED_AUDIO_HEADER_PREFIXES) or b"ftyp" in header
 
 
 def parse_track_time(value):
@@ -476,15 +481,7 @@ class MixForm(forms.ModelForm):
             raise forms.ValidationError("The uploaded audio type is not supported.")
         header = audio_file.read(16)
         audio_file.seek(0)
-        if not (
-            header.startswith(b"ID3")
-            or header.startswith(b"\xff")
-            or header.startswith(b"RIFF")
-            or header.startswith(b"fLaC")
-            or header.startswith(b"FORM")
-            or header.startswith(b"OggS")
-            or b"ftyp" in header
-        ):
+        if not audio_header_looks_supported(header):
             raise forms.ValidationError("The uploaded file does not look like supported audio.")
         return audio_file
 

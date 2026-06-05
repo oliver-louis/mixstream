@@ -42,6 +42,10 @@ class Command(BaseCommand):
             time.sleep(options["sleep"])
 
     def process_mix(self, mix):
+        mix.processing_status = Mix.ProcessingStatus.PROCESSING
+        mix.processing_error = ""
+        mix.media_processing_error = ""
+        mix.save(update_fields=["processing_status", "processing_error", "media_processing_error", "updated_at"])
         logger.info("media_processing_started", extra={"event": "media_processing_started", "mix_id": mix.pk, "user_id": mix.owner_id})
         if mix.audio_file and not mix.source_audio_file:
             mix.source_audio_file = mix.audio_file

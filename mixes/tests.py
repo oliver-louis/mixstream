@@ -1,14 +1,17 @@
 import json
+from datetime import timedelta
 from django.contrib.auth.models import User
+from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 from tempfile import TemporaryDirectory
 
 from mixes.auth import AuthentikOIDCBackend
 from mixes.management.commands.process_mix_media import Command
 from .forms import parse_tracklist_json_file, parse_tracklist_text, parse_tracklist_upload, tracklist_to_json_payload, tracklist_to_text
-from .models import Genre, Mix, MixStreamEvent, MixTracklistItem, MixViewEvent
+from .models import Genre, Mix, MixStreamEvent, MixTracklistItem, MixViewEvent, UploadSession
 
 
 class MixVisibilityTests(TestCase):
@@ -624,7 +627,12 @@ class MixProcessingTests(TestCase):
             processing_status=Mix.ProcessingStatus.PENDING,
         )
         command = Command()
-        command.probe_duration = lambda path: 123.4
+        def probe_duration(path):
+            mix.refresh_from_db()
+            self.assertEqual(mix.processing_status, Mix.ProcessingStatus.PROCESSING)
+            return 123.4
+
+        command.probe_duration = probe_duration
         command.transcode_opus = lambda mix, path: "mixes/processed/1/test.opus"
         command.transcode_mp3 = lambda mix, path: "mixes/processed/1/test.mp3"
         command.process_cover = lambda mix: ("covers/processed/1/large.webp", "covers/processed/1/thumb.webp")
@@ -639,6 +647,135 @@ class MixProcessingTests(TestCase):
         self.assertEqual(mix.opus_file.name, "mixes/processed/1/test.opus")
         self.assertEqual(mix.mp3_file.name, "mixes/processed/1/test.mp3")
         self.assertTrue(mix.media_processed_at)
+
+
+class ChunkedUploadTests(TestCase):
+    def setUp(self):
+        self.tmp = TemporaryDirectory()
+        self.override = override_settings(MEDIA_ROOT=self.tmp.name, DJMIX_MAX_UPLOAD_BYTES=100, DJMIX_MAX_CHUNK_BYTES=10)
+        self.override.enable()
+        self.owner = User.objects.create_user(username="owner", password="password")
+        self.other = User.objects.create_user(username="other", password="password")
+        self.client.login(username="owner", password="password")
+
+    def tearDown(self):
+        self.override.disable()
+        self.tmp.cleanup()
+
+    def start_upload(self, *, size=11, chunk_size=6):
+        return self.client.post(
+            reverse("mixes:chunked_upload_start"),
+            {
+                "title": "Chunky Mix",
+                "visibility": Mix.Visibility.PRIVATE,
+                "tracklist_json": "[]",
+                "audio_filename": "source.mp3",
+                "audio_content_type": "audio/mpeg",
+                "audio_size": str(size),
+                "chunk_size": str(chunk_size),
+            },
+        )
+
+    def test_chunked_upload_requires_login(self):
+        self.client.logout()
+
+        response = self.start_upload()
+
+        self.assertEqual(response.status_code, 302)
+
+    def test_chunked_upload_start_rejects_files_over_upload_limit(self):
+        response = self.start_upload(size=101)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("error", response.json())
+
+    def test_chunk_endpoint_rejects_oversized_and_duplicate_chunks(self):
+        upload_id = self.start_upload().json()["upload_id"]
+
+        response = self.client.post(
+            reverse("mixes:chunked_upload_chunk", args=[upload_id]),
+            {"index": "0", "chunk": SimpleUploadedFile("chunk.part", b"x" * 11)},
+        )
+
+        self.assertEqual(response.status_code, 413)
+
+        response = self.client.post(
+            reverse("mixes:chunked_upload_chunk", args=[upload_id]),
+            {"index": "0", "chunk": SimpleUploadedFile("chunk.part", b"ID3abc")},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(
+            reverse("mixes:chunked_upload_chunk", args=[upload_id]),
+            {"index": "0", "chunk": SimpleUploadedFile("chunk.part", b"ID3abc")},
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_complete_assembles_chunks_creates_pending_mix_and_removes_temp_files(self):
+        payload = self.start_upload(size=11, chunk_size=6).json()
+        upload_id = payload["upload_id"]
+        self.client.post(reverse("mixes:chunked_upload_chunk", args=[upload_id]), {"index": "0", "chunk": SimpleUploadedFile("chunk.part", b"ID3abc")})
+        self.client.post(reverse("mixes:chunked_upload_chunk", args=[upload_id]), {"index": "1", "chunk": SimpleUploadedFile("chunk.part", b"defgh")})
+
+        response = self.client.post(reverse("mixes:chunked_upload_complete", args=[upload_id]))
+
+        self.assertEqual(response.status_code, 200)
+        mix = Mix.objects.get(pk=response.json()["mix_id"])
+        self.assertEqual(mix.processing_status, Mix.ProcessingStatus.PENDING)
+        self.assertEqual(mix.original_filename, "source.mp3")
+        self.assertTrue(mix.audio_file.storage.exists(mix.audio_file.name))
+        upload_session = UploadSession.objects.get(upload_id=upload_id)
+        self.assertEqual(upload_session.status, UploadSession.Status.COMPLETED)
+        self.assertFalse(upload_session.upload_dir.exists())
+
+    def test_complete_rejects_incomplete_upload(self):
+        upload_id = self.start_upload(size=11, chunk_size=6).json()["upload_id"]
+
+        response = self.client.post(reverse("mixes:chunked_upload_complete", args=[upload_id]))
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["missing"], [0, 1])
+
+    def test_chunk_uploads_are_owner_scoped(self):
+        upload_id = self.start_upload().json()["upload_id"]
+        self.client.logout()
+        self.client.login(username="other", password="password")
+
+        response = self.client.post(
+            reverse("mixes:chunked_upload_chunk", args=[upload_id]),
+            {"index": "0", "chunk": SimpleUploadedFile("chunk.part", b"ID3abc")},
+        )
+
+        self.assertEqual(response.status_code, 404)
+
+    def test_abort_and_cleanup_remove_temp_files(self):
+        upload_id = self.start_upload().json()["upload_id"]
+        self.client.post(reverse("mixes:chunked_upload_chunk", args=[upload_id]), {"index": "0", "chunk": SimpleUploadedFile("chunk.part", b"ID3abc")})
+        upload_session = UploadSession.objects.get(upload_id=upload_id)
+        self.assertTrue(upload_session.upload_dir.exists())
+
+        response = self.client.post(reverse("mixes:chunked_upload_abort", args=[upload_id]))
+
+        self.assertEqual(response.status_code, 200)
+        upload_session.refresh_from_db()
+        self.assertEqual(upload_session.status, UploadSession.Status.ABORTED)
+        self.assertFalse(upload_session.upload_dir.exists())
+
+        old_upload = UploadSession.objects.create(
+            owner=self.owner,
+            filename="old.mp3",
+            total_size=6,
+            chunk_size=6,
+            total_chunks=1,
+            metadata={"title": "Old"},
+        )
+        old_upload.upload_dir.mkdir(parents=True)
+        old_upload.chunk_path(0).write_bytes(b"ID3abc")
+        UploadSession.objects.filter(pk=old_upload.pk).update(created_at=timezone.now() - timedelta(hours=25))
+        call_command("cleanup_upload_sessions", verbosity=0)
+        old_upload.refresh_from_db()
+        self.assertEqual(old_upload.status, UploadSession.Status.ABORTED)
+        self.assertFalse(old_upload.upload_dir.exists())
 
 
 class AuthentikOIDCBackendTests(TestCase):
