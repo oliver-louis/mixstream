@@ -188,6 +188,24 @@ class MixVisibilityTests(TestCase):
         self.assertEqual(mix.processing_status, Mix.ProcessingStatus.PENDING)
         self.assertTrue(mix.source_audio_file.name)
 
+    def test_direct_upload_accepts_vendor_wave_mime_type(self):
+        self.client.force_login(self.owner)
+        audio = SimpleUploadedFile("set.wav", b"RIFF\x00\x00\x00\x00WAVEfmt ", content_type="audio/vnd.wave")
+
+        response = self.client.post(
+            reverse("mixes:upload"),
+            {
+                "title": "Wave Upload",
+                "description": "",
+                "audio_file": audio,
+                "visibility": Mix.Visibility.PRIVATE,
+                "tracklist_text": "",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(Mix.objects.filter(title="Wave Upload").exists())
+
     def test_upload_creates_custom_genres_and_can_hide_view_count(self):
         self.client.force_login(self.owner)
         audio = SimpleUploadedFile("set.mp3", b"ID3\x00\x00\x00\x00\x00\x00\x00", content_type="audio/mpeg")
@@ -662,15 +680,15 @@ class ChunkedUploadTests(TestCase):
         self.override.disable()
         self.tmp.cleanup()
 
-    def start_upload(self, *, size=11, chunk_size=6):
+    def start_upload(self, *, size=11, chunk_size=6, filename="source.mp3", content_type="audio/mpeg"):
         return self.client.post(
             reverse("mixes:chunked_upload_start"),
             {
                 "title": "Chunky Mix",
                 "visibility": Mix.Visibility.PRIVATE,
                 "tracklist_json": "[]",
-                "audio_filename": "source.mp3",
-                "audio_content_type": "audio/mpeg",
+                "audio_filename": filename,
+                "audio_content_type": content_type,
                 "audio_size": str(size),
                 "chunk_size": str(chunk_size),
             },
@@ -688,6 +706,11 @@ class ChunkedUploadTests(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertIn("error", response.json())
+
+    def test_chunked_upload_start_accepts_vendor_wave_mime_type(self):
+        response = self.start_upload(filename="source.wav", content_type="audio/vnd.wave")
+
+        self.assertEqual(response.status_code, 200)
 
     def test_chunk_endpoint_rejects_oversized_and_duplicate_chunks(self):
         upload_id = self.start_upload().json()["upload_id"]
