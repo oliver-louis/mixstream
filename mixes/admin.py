@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from .models import Genre, Mix, MixStreamEvent, MixViewEvent, Profile
+from .models import Genre, Mix, MixPlaybackProgress, MixStreamEvent, MixViewEvent, Profile
 
 
 @admin.register(Profile)
@@ -40,3 +40,11 @@ class MixStreamEventAdmin(admin.ModelAdmin):
     list_filter = ("codec", "created_at")
     search_fields = ("mix__title", "user__username", "event_identity")
     readonly_fields = ("mix", "user", "event_identity", "ip_hash", "user_agent_hash", "session_key", "codec", "seconds_listened", "percent_listened", "created_at")
+
+
+@admin.register(MixPlaybackProgress)
+class MixPlaybackProgressAdmin(admin.ModelAdmin):
+    list_display = ("mix", "user", "position_seconds", "completed", "updated_at")
+    list_filter = ("completed", "updated_at")
+    search_fields = ("mix__title", "user__username", "user__email")
+    readonly_fields = ("updated_at",)

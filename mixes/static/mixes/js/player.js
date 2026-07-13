@@ -15,6 +15,15 @@
   const volumeToggle = player.querySelector("[data-volume-toggle]");
   const volumeSlider = player.querySelector("[data-volume-slider]");
   const DEFAULT_COVER = document.body?.dataset.defaultCover || "/static/mixes/branding/defaultcover.png";
+  const IS_AUTHENTICATED = document.body?.dataset.authenticated === "true";
+  const LATEST_PROGRESS_URL = document.body?.dataset.latestProgressUrl || "";
+  const PLAYBACK_STORAGE_KEY = "mixstream.playback.v1";
+  const PLAYBACK_STORAGE_VERSION = 1;
+  const PLAYBACK_STORAGE_LIMIT = 50;
+  const PLAYBACK_STORAGE_TTL = 180 * 24 * 60 * 60 * 1000;
+  const LOCAL_SAVE_INTERVAL = 5000;
+  const SERVER_SAVE_INTERVAL = 25000;
+  const MEDIA_POSITION_INTERVAL = 15000;
   const ROOT_STYLES = getComputedStyle(document.documentElement);
   const PLAYED_WAVE_COLOR = ROOT_STYLES.getPropertyValue("--accent").trim() || "#fe640b";
   const HOVER_WAVE_COLOR = ROOT_STYLES.getPropertyValue("--sky").trim() || "#04a5e5";
@@ -38,6 +47,17 @@
   let playbackFrame = 0;
   let hasPlaybackStarted = false;
   let mediaSessionBound = false;
+  let mediaSessionMixId = null;
+  let lastLocalSaveAt = 0;
+  let lastServerSaveAt = 0;
+  let lastMediaPositionAt = 0;
+  let restoreStarted = false;
+  let restoringPosition = false;
+  let positionRestoreGeneration = 0;
+  let suppressProgressEvents = false;
+  let ignoreNextPause = false;
+  const progressSyncInFlight = new Set();
+  const queuedProgressSyncs = new Map();
 
   function formatTime(value) {
     if (!Number.isFinite(value)) return "0:00";
@@ -59,56 +79,258 @@
 
   function mediaSessionArtwork(imageUrl) {
     const artwork = absoluteUrl(imageUrl || DEFAULT_COVER);
-    return [
-      { src: artwork, sizes: "96x96", type: "image/webp" },
-      { src: artwork, sizes: "192x192", type: "image/webp" },
-      { src: artwork, sizes: "256x256", type: "image/webp" },
-      { src: artwork, sizes: "512x512", type: "image/webp" },
-    ];
+    return artwork ? [{ src: artwork }] : [];
+  }
+
+  function emptyPlaybackStore() {
+    return { version: PLAYBACK_STORAGE_VERSION, currentMixId: null, items: {} };
+  }
+
+  function readPlaybackStore() {
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(PLAYBACK_STORAGE_KEY) || "null");
+      if (!parsed || parsed.version !== PLAYBACK_STORAGE_VERSION || typeof parsed.items !== "object") {
+        return emptyPlaybackStore();
+      }
+      const cutoff = Date.now() - PLAYBACK_STORAGE_TTL;
+      const entries = Object.entries(parsed.items)
+        .filter(([, item]) => item && Number(item.updatedAt || 0) >= cutoff)
+        .sort((left, right) => Number(right[1].updatedAt || 0) - Number(left[1].updatedAt || 0))
+        .slice(0, PLAYBACK_STORAGE_LIMIT);
+      parsed.items = Object.fromEntries(entries);
+      if (!parsed.items[String(parsed.currentMixId)]) parsed.currentMixId = entries[0]?.[0] || null;
+      return parsed;
+    } catch (error) {
+      return emptyPlaybackStore();
+    }
+  }
+
+  function writePlaybackStore(store) {
+    try {
+      const entries = Object.entries(store.items || {})
+        .sort((left, right) => Number(right[1].updatedAt || 0) - Number(left[1].updatedAt || 0))
+        .slice(0, PLAYBACK_STORAGE_LIMIT);
+      store.items = Object.fromEntries(entries);
+      window.localStorage.setItem(PLAYBACK_STORAGE_KEY, JSON.stringify(store));
+    } catch (error) {
+      // Playback must remain usable when storage is unavailable or full.
+    }
+  }
+
+  function clearPlaybackStore() {
+    try {
+      window.localStorage.removeItem(PLAYBACK_STORAGE_KEY);
+    } catch (error) {
+      // Ignore storage failures during logout.
+    }
+  }
+
+  function storedProgressForMix(mixId) {
+    if (!mixId) return null;
+    return readPlaybackStore().items[String(mixId)] || null;
+  }
+
+  function trackDataForStorage(trackData) {
+    if (!trackData) return null;
+    return {
+      mixId: Number(trackData.mixId || 0),
+      isPublic: trackData.isPublic !== false,
+      audioUrl: trackData.audioUrl || "",
+      opusUrl: trackData.opusUrl || "",
+      mp3Url: trackData.mp3Url || "",
+      title: trackData.title || "",
+      artist: trackData.artist || "",
+      cover: trackData.cover || "",
+      streamUrl: trackData.streamUrl || "",
+      progressUrl: trackData.progressUrl || "",
+      detailUrl: trackData.detailUrl || "",
+      duration: Number(trackData.duration || 0),
+      tracklist: Array.isArray(trackData.tracklist) ? trackData.tracklist : [],
+    };
+  }
+
+  function rootServerProgress(root) {
+    const mixId = Number(root?.dataset.mixId || 0);
+    if (!mixId) return null;
+    return {
+      mixId,
+      position: Math.max(0, Number(root.dataset.resumeSeconds || 0)),
+      completed: root.dataset.resumeCompleted === "true",
+      serverUpdatedAt: root.dataset.resumeUpdatedAt || "",
+      updatedAt: Date.parse(root.dataset.resumeUpdatedAt || "") || 0,
+      dirty: false,
+    };
+  }
+
+  function preferredProgressForRoot(root) {
+    const mixId = Number(root?.dataset.mixId || 0);
+    const local = storedProgressForMix(mixId);
+    const server = rootServerProgress(root);
+    if (local?.dirty) return local;
+    if (!local) return server;
+    if (!server) return local;
+    const localServerTime = Date.parse(local.serverUpdatedAt || "") || 0;
+    const serverTime = Date.parse(server.serverUpdatedAt || "") || 0;
+    return serverTime > localServerTime ? server : local;
+  }
+
+  function saveLocalProgress({ completed = false } = {}) {
+    if (!currentTrackData?.mixId) return null;
+    const store = readPlaybackStore();
+    const key = String(currentTrackData.mixId);
+    const previous = store.items[key] || {};
+    const total = audio.duration || Number(currentTrackData.duration || 0);
+    const position = completed && total ? total : Math.max(0, Math.min(total || Number.MAX_SAFE_INTEGER, audio.currentTime || 0));
+    const record = {
+      mixId: Number(currentTrackData.mixId),
+      position,
+      duration: Number(total || 0),
+      completed: Boolean(completed),
+      updatedAt: Date.now(),
+      serverUpdatedAt: previous.serverUpdatedAt || "",
+      dirty: IS_AUTHENTICATED,
+      track: trackDataForStorage(currentTrackData),
+    };
+    store.currentMixId = key;
+    store.items[key] = record;
+    writePlaybackStore(store);
+    lastLocalSaveAt = Date.now();
+    return record;
+  }
+
+  async function syncProgressRecord(record, { keepalive = false } = {}) {
+    if (!IS_AUTHENTICATED || !record?.dirty || !record.track?.progressUrl) return;
+    const key = String(record.mixId);
+    if (progressSyncInFlight.has(key)) {
+      queuedProgressSyncs.set(key, Boolean(queuedProgressSyncs.get(key) || keepalive));
+      return;
+    }
+    progressSyncInFlight.add(key);
+    const snapshotUpdatedAt = record.updatedAt;
+    try {
+      const response = await fetch(record.track.progressUrl, {
+        method: "POST",
+        keepalive,
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRFToken": document.cookie.match(/csrftoken=([^;]+)/)?.[1] || "",
+        },
+        body: JSON.stringify({
+          position_seconds: Math.floor(record.position || 0),
+          completed: Boolean(record.completed),
+        }),
+      });
+      if (response.status === 401) {
+        clearPlaybackStore();
+        clearRestoredPlayer();
+        return;
+      }
+      if (response.status === 403) {
+        removeStoredMix(record.mixId);
+        if (Number(currentTrackData?.mixId || 0) === Number(record.mixId)) clearRestoredPlayer();
+        return;
+      }
+      if (!response.ok) return;
+      const payload = await response.json();
+      const store = readPlaybackStore();
+      const current = store.items[String(record.mixId)];
+      if (!current || current.updatedAt !== snapshotUpdatedAt) return;
+      current.position = Number(payload.position_seconds || 0);
+      current.completed = Boolean(payload.completed);
+      current.serverUpdatedAt = payload.updated_at || "";
+      current.dirty = false;
+      store.items[String(record.mixId)] = current;
+      writePlaybackStore(store);
+      lastServerSaveAt = Date.now();
+    } catch (error) {
+      // The dirty local record is retried when playback or connectivity resumes.
+    } finally {
+      progressSyncInFlight.delete(key);
+      if (queuedProgressSyncs.has(key)) {
+        const queuedKeepalive = queuedProgressSyncs.get(key);
+        queuedProgressSyncs.delete(key);
+        const latest = storedProgressForMix(record.mixId);
+        if (latest?.dirty) syncProgressRecord(latest, { keepalive: queuedKeepalive });
+      }
+    }
+  }
+
+  function persistProgress({ completed = false, syncServer = false, keepalive = false } = {}) {
+    const record = saveLocalProgress({ completed });
+    if (record && syncServer) syncProgressRecord(record, { keepalive });
+    return record;
   }
 
   function bindMediaSessionActions() {
     if (!("mediaSession" in navigator) || mediaSessionBound) return;
     mediaSessionBound = true;
-    navigator.mediaSession.setActionHandler("play", () => playAudio());
-    navigator.mediaSession.setActionHandler("pause", () => pauseAudio());
-    navigator.mediaSession.setActionHandler("seekbackward", (details) => {
-      seekBySeconds(-(details?.seekOffset || 10));
-    });
-    navigator.mediaSession.setActionHandler("seekforward", (details) => {
-      seekBySeconds(details?.seekOffset || 10);
-    });
-    navigator.mediaSession.setActionHandler("seekto", (details) => {
-      if (!Number.isFinite(details?.seekTime)) return;
-      const total = audio.duration || Number(currentTrackData?.duration || 0);
-      if (!total) return;
-      audio.currentTime = Math.max(0, Math.min(total, details.seekTime));
-      triggerSeekCue(currentTrack, audio.currentTime);
-      syncPlaybackVisuals();
+    const handlers = {
+      play: () => playAudio(),
+      pause: () => pauseAudio(),
+      seekbackward: (details) => seekBySeconds(-(details?.seekOffset || 10)),
+      seekforward: (details) => seekBySeconds(details?.seekOffset || 10),
+      seekto: (details) => {
+        if (!Number.isFinite(details?.seekTime)) return;
+        const total = audio.duration || Number(currentTrackData?.duration || 0);
+        if (!total) return;
+        audio.currentTime = Math.max(0, Math.min(total, details.seekTime));
+        triggerSeekCue(currentTrack, audio.currentTime);
+        syncPlaybackVisuals();
+        syncMediaSessionState(true);
+        persistProgress({ syncServer: true });
+      },
+    };
+    Object.entries(handlers).forEach(([action, handler]) => {
+      try {
+        navigator.mediaSession.setActionHandler(action, handler);
+      } catch (error) {
+        // Browsers expose different subsets of Media Session actions.
+      }
     });
   }
 
-  function updateMediaSession() {
-    if (!("mediaSession" in navigator)) return;
+  function setMediaSessionMetadata(force = false) {
+    if (!("mediaSession" in navigator) || !currentTrackData) return;
     bindMediaSessionActions();
-    if (!currentTrackData) {
-      navigator.mediaSession.metadata = null;
-      return;
-    }
+    if (!force && mediaSessionMixId === currentTrackData.mixId) return;
     navigator.mediaSession.metadata = new MediaMetadata({
       title: currentTrackData.title || "MixStream",
       artist: currentTrackData.artist || "",
       album: "MixStream",
       artwork: mediaSessionArtwork(currentTrackData.cover),
     });
+    mediaSessionMixId = currentTrackData.mixId;
+  }
+
+  function syncMediaSessionState(includePosition = true) {
+    if (!("mediaSession" in navigator) || !currentTrackData) return;
+    setMediaSessionMetadata();
     navigator.mediaSession.playbackState = audio.paused ? "paused" : "playing";
-    if (Number.isFinite(audio.duration) && audio.duration > 0) {
-      navigator.mediaSession.setPositionState({
-        duration: audio.duration,
-        playbackRate: audio.playbackRate || 1,
-        position: Math.max(0, Math.min(audio.duration, audio.currentTime || 0)),
-      });
+    const total = audio.duration || Number(currentTrackData.duration || 0);
+    if (includePosition && Number.isFinite(total) && total > 0) {
+      try {
+        navigator.mediaSession.setPositionState({
+          duration: total,
+          playbackRate: audio.playbackRate || 1,
+          position: Math.max(0, Math.min(total, audio.currentTime || 0)),
+        });
+        lastMediaPositionAt = Date.now();
+      } catch (error) {
+        // Ignore browsers that expose Media Session without position state.
+      }
     }
+  }
+
+  function clearMediaSession() {
+    if (!("mediaSession" in navigator)) return;
+    navigator.mediaSession.metadata = null;
+    navigator.mediaSession.playbackState = "none";
+    try {
+      navigator.mediaSession.setPositionState();
+    } catch (error) {
+      // Position state is optional.
+    }
+    mediaSessionMixId = null;
   }
 
   function waveformValues(root) {
@@ -121,22 +343,16 @@
     return Array.from({ length: 180 }, (_, index) => 0.16 + Math.abs(Math.sin(index * 0.19)) * 0.72);
   }
 
-  function tracklistValues(root) {
-    const scriptId = root.dataset.tracklistScript;
-    if (!scriptId) return [];
-    const script = document.getElementById(scriptId);
-    if (!script) return [];
-    try {
-      const values = JSON.parse(script.textContent || "[]");
-      if (!Array.isArray(values)) return [];
-      return values
+  function normalizeTracklistValues(values) {
+    if (!Array.isArray(values)) return [];
+    return values
         .map((item, index) => {
-          const startSeconds = Number(item.start_seconds);
-          const endRaw = item.end_seconds;
+          const startSeconds = Number(item.startSeconds ?? item.start_seconds);
+          const endRaw = item.endSeconds ?? item.end_seconds;
           const parsedEnd = endRaw === null || endRaw === undefined || endRaw === "" ? null : Number(endRaw);
           const endSeconds = Number.isFinite(parsedEnd) && Number.isFinite(startSeconds) && parsedEnd > startSeconds ? parsedEnd : null;
           return {
-            key: Number(item.position) || index + 1,
+            key: Number(item.key ?? item.position) || index + 1,
             title: item.title || "",
             artist: item.artist || "",
             links: item.links && typeof item.links === "object" ? item.links : {},
@@ -148,6 +364,15 @@
         })
         .filter((item) => item.title && Number.isFinite(item.startSeconds))
         .sort((a, b) => a.startSeconds - b.startSeconds);
+  }
+
+  function tracklistValues(root) {
+    const scriptId = root.dataset.tracklistScript;
+    if (!scriptId) return [];
+    const script = document.getElementById(scriptId);
+    if (!script) return [];
+    try {
+      return normalizeTracklistValues(JSON.parse(script.textContent || "[]"));
     } catch (error) {
       return [];
     }
@@ -188,6 +413,8 @@
 
   function isCurrentRoot(root) {
     if (!currentTrackData) return false;
+    const rootMixId = Number(root.dataset.mixId || 0);
+    if (rootMixId && currentTrackData.mixId) return rootMixId === Number(currentTrackData.mixId);
     return [root.dataset.audioUrl, root.dataset.audioMp3Url].filter(Boolean).includes(currentTrackData.audioUrl);
   }
 
@@ -463,10 +690,12 @@
     currentTrack = pageRoot;
     currentTrackData = {
       ...currentTrackData,
+      mixId: Number(pageRoot.dataset.mixId || currentTrackData.mixId || 0),
       title: pageRoot.dataset.title || currentTrackData.title,
       artist: pageRoot.dataset.artist || currentTrackData.artist,
       cover: pageRoot.dataset.cover || currentTrackData.cover,
       streamUrl: pageRoot.dataset.streamUrl || currentTrackData.streamUrl,
+      progressUrl: pageRoot.dataset.progressUrl || currentTrackData.progressUrl,
       duration: Number(pageRoot.dataset.duration || currentTrackData.duration || 0),
       tracklist: tracklistValues(pageRoot),
     };
@@ -474,46 +703,199 @@
     title.textContent = currentTrackData.title;
     artist.textContent = currentTrackData.artist;
     setArtwork(cover, currentTrackData.cover);
-    updateMediaSession();
+    setMediaSessionMetadata(true);
+    syncMediaSessionState(true);
     renderProgressMarkers();
     updateTracklistCue();
     renderAllWaveforms();
   }
 
-  function loadTrack(source, autoplay = true) {
-    const root = resolveTrackRoot(source);
-    const audioUrl = preferredAudioUrl(root);
-    if (!audioUrl) return;
-    currentTrack = root;
-    currentTrackData = {
-      audioUrl,
+  function applyPlaybackPosition(position, completed, callback = null) {
+    const requestedPosition = completed ? 0 : Math.max(0, Number(position || 0));
+    const generation = ++positionRestoreGeneration;
+    restoringPosition = completed || requestedPosition > 0;
+    let finished = false;
+    let fallbackTimer = 0;
+
+    const cleanup = () => {
+      audio.removeEventListener("loadedmetadata", attemptApply);
+      audio.removeEventListener("durationchange", attemptApply);
+      audio.removeEventListener("canplay", attemptApply);
+      window.clearTimeout(fallbackTimer);
+    };
+
+    const finish = () => {
+      if (finished) return;
+      finished = true;
+      cleanup();
+      syncPlaybackVisuals();
+      syncMediaSessionState(true);
+      if (callback) callback();
+    };
+
+    const apply = () => {
+      if (generation !== positionRestoreGeneration) {
+        finished = true;
+        cleanup();
+        return true;
+      }
+      const total = Number(audio.duration);
+      if (!Number.isFinite(total) || total <= 0) return false;
+      const nextPosition = Math.min(requestedPosition, Math.max(0, total - 0.1));
+      if (Math.abs((audio.currentTime || 0) - nextPosition) > 0.25) {
+        audio.addEventListener("seeked", () => {
+          if (generation === positionRestoreGeneration) restoringPosition = false;
+        }, { once: true });
+        audio.currentTime = nextPosition;
+        window.setTimeout(() => {
+          if (generation === positionRestoreGeneration) restoringPosition = false;
+        }, 1000);
+      } else {
+        restoringPosition = false;
+      }
+      finish();
+      return true;
+    };
+
+    function attemptApply() {
+      apply();
+    }
+
+    audio.addEventListener("loadedmetadata", attemptApply);
+    audio.addEventListener("durationchange", attemptApply);
+    audio.addEventListener("canplay", attemptApply);
+    if (!apply()) {
+      fallbackTimer = window.setTimeout(() => {
+        if (generation !== positionRestoreGeneration || apply()) return;
+        restoringPosition = false;
+        finish();
+      }, 2000);
+      audio.load();
+    }
+  }
+
+  function trackDataFromRoot(root) {
+    return {
+      mixId: Number(root.dataset.mixId || 0),
+      isPublic: root.dataset.isPublic !== "false",
+      audioUrl: preferredAudioUrl(root),
       opusUrl: root.dataset.audioUrl || "",
       mp3Url: root.dataset.audioMp3Url || "",
-      title: root.dataset.title,
-      artist: root.dataset.artist,
-      cover: root.dataset.cover,
+      title: root.dataset.title || "",
+      artist: root.dataset.artist || "",
+      cover: root.dataset.cover || "",
       streamUrl: root.dataset.streamUrl || root.dataset.playUrl || "",
+      progressUrl: root.dataset.progressUrl || "",
       detailUrl: root.dataset.detailUrl || "",
       duration: Number(root.dataset.duration || 0),
       tracklist: tracklistValues(root),
     };
+  }
+
+  function loadTrack(source, autoplay = true, restoreProgress = null) {
+    const root = resolveTrackRoot(source);
+    const audioUrl = preferredAudioUrl(root);
+    if (!audioUrl) return;
+    const nextMixId = Number(root.dataset.mixId || 0);
+    if (currentTrackData?.mixId && currentTrackData.mixId !== nextMixId) {
+      persistProgress({ syncServer: true, keepalive: true });
+    }
+    currentTrack = root;
+    currentTrackData = trackDataFromRoot(root);
     currentStreamUrl = currentTrackData.streamUrl;
     streamCounted = false;
     cueOverride = null;
     hasPlaybackStarted = false;
     if (audio.src !== new URL(currentTrackData.audioUrl, window.location.href).href) {
+      if (!audio.paused) ignoreNextPause = true;
       audio.src = currentTrackData.audioUrl;
     }
     title.textContent = currentTrackData.title;
     artist.textContent = currentTrackData.artist;
     setArtwork(cover, currentTrackData.cover);
-    updateMediaSession();
+    setMediaSessionMetadata(true);
     renderProgressMarkers();
     player.hidden = false;
     renderAllWaveforms();
-    if (autoplay) playAudio();
+    const saved = restoreProgress || preferredProgressForRoot(root);
+    if (saved && (Number(saved.position || 0) > 0 || saved.completed)) {
+      applyPlaybackPosition(saved.position, saved.completed, autoplay ? playAudio : null);
+    } else if (autoplay) {
+      playAudio();
+    } else {
+      syncMediaSessionState(true);
+    }
     updatePlayButtons();
     updateTracklistCue();
+  }
+
+  function restoreTrackData(trackData, saved) {
+    if (!trackData?.mixId || !trackData.audioUrl) return false;
+    const pageRoot = Array.from(document.querySelectorAll("[data-waveform]")).find(
+      (root) => Number(root.dataset.mixId || 0) === Number(trackData.mixId),
+    );
+    if (pageRoot) {
+      loadTrack(pageRoot, false, saved);
+      return true;
+    }
+    currentTrack = null;
+    const restoredTrack = trackDataForStorage(trackData);
+    if (restoredTrack.mp3Url && prefersMp3Fallback()) restoredTrack.audioUrl = restoredTrack.mp3Url;
+    currentTrackData = {
+      ...restoredTrack,
+      tracklist: normalizeTracklistValues(trackData.tracklist || []),
+    };
+    currentStreamUrl = currentTrackData.streamUrl;
+    streamCounted = false;
+    cueOverride = null;
+    hasPlaybackStarted = false;
+    audio.src = currentTrackData.audioUrl;
+    title.textContent = currentTrackData.title;
+    artist.textContent = currentTrackData.artist;
+    setArtwork(cover, currentTrackData.cover);
+    setMediaSessionMetadata(true);
+    player.hidden = false;
+    renderProgressMarkers();
+    applyPlaybackPosition(saved?.position || 0, Boolean(saved?.completed));
+    updatePlayButtons(false);
+    return true;
+  }
+
+  function removeStoredMix(mixId) {
+    if (!mixId) return;
+    const store = readPlaybackStore();
+    delete store.items[String(mixId)];
+    if (String(store.currentMixId) === String(mixId)) {
+      store.currentMixId = Object.keys(store.items)[0] || null;
+    }
+    writePlaybackStore(store);
+  }
+
+  function clearRestoredPlayer() {
+    const mixId = currentTrackData?.mixId;
+    stopPlaybackLoop();
+    suppressProgressEvents = true;
+    audio.pause();
+    audio.removeAttribute("src");
+    audio.load();
+    suppressProgressEvents = false;
+    removeStoredMix(mixId);
+    currentStreamUrl = "";
+    currentTrack = null;
+    currentTrackData = null;
+    streamCounted = false;
+    cueOverride = null;
+    hasPlaybackStarted = false;
+    title.textContent = "";
+    artist.textContent = "";
+    time.textContent = "0:00";
+    duration.textContent = "0:00";
+    if (progress) progress.style.transform = "scaleX(0)";
+    progressMarkers?.replaceChildren();
+    progressTrack?.classList.remove("has-markers");
+    player.hidden = true;
+    clearMediaSession();
+    updatePlayButtons(false);
   }
 
   function swapToMp3Fallback() {
@@ -534,6 +916,11 @@
 
   function playAudio() {
     mobilePauseIconHeld = false;
+    const saved = storedProgressForMix(currentTrackData?.mixId);
+    if (audio.ended || saved?.completed) {
+      audio.currentTime = 0;
+      persistProgress({ completed: false, syncServer: true });
+    }
     const playPromise = audio.play();
     updatePlayButtons(true);
     if (playPromise && typeof playPromise.catch === "function") {
@@ -543,15 +930,23 @@
 
   function pauseAudio(holdPauseIcon = false) {
     mobilePauseIconHeld = holdPauseIcon;
+    const wasPaused = audio.paused;
     audio.pause();
     updatePlayButtons(false);
+    if (wasPaused && currentTrackData) {
+      syncMediaSessionState(true);
+      persistProgress({ syncServer: true, keepalive: true });
+    }
   }
 
   function dismissPlayerForEditor() {
+    if (currentTrackData) persistProgress({ syncServer: true, keepalive: true });
     stopPlaybackLoop();
+    suppressProgressEvents = true;
     audio.pause();
     audio.removeAttribute("src");
     audio.load();
+    suppressProgressEvents = false;
     currentStreamUrl = "";
     currentTrack = null;
     currentTrackData = null;
@@ -571,7 +966,7 @@
     updateWaveTimes();
     updateTracklistCue();
     updatePlayButtons(false);
-    updateMediaSession();
+    clearMediaSession();
   }
 
   function seekBySeconds(delta) {
@@ -579,10 +974,11 @@
     if (!total) return;
     audio.currentTime = Math.max(0, Math.min(total, audio.currentTime + delta));
     triggerSeekCue(currentTrack, audio.currentTime);
-    updateMediaSession();
+    syncMediaSessionState(true);
     renderAllWaveforms();
     updateWaveTimes();
     updateTracklistCue();
+    persistProgress({ syncServer: true });
   }
 
   function isTypingTarget(element) {
@@ -608,7 +1004,7 @@
   }
 
   function countStream() {
-    if (streamCounted || !currentStreamUrl) return;
+    if (streamCounted || !currentStreamUrl || !hasPlaybackStarted || audio.paused) return;
     const percent = audio.duration ? Math.round((audio.currentTime / audio.duration) * 100) : 0;
     if (percent < 10 && audio.currentTime < 20) return;
     streamCounted = true;
@@ -635,6 +1031,94 @@
         headers: { "X-CSRFToken": document.cookie.match(/csrftoken=([^;]+)/)?.[1] || "" },
       }).catch(() => {});
     });
+  }
+
+  function serverProgressRecord(payload) {
+    if (!payload?.mix_id || !payload.track) return null;
+    return {
+      mixId: Number(payload.mix_id),
+      position: Math.max(0, Number(payload.position_seconds || 0)),
+      duration: Number(payload.track.duration || 0),
+      completed: Boolean(payload.completed),
+      updatedAt: Date.parse(payload.updated_at || "") || Date.now(),
+      serverUpdatedAt: payload.updated_at || "",
+      dirty: false,
+      track: {
+        ...trackDataForStorage(payload.track),
+        tracklist: normalizeTracklistValues(payload.track.tracklist || []),
+      },
+    };
+  }
+
+  function cacheProgressRecord(record) {
+    if (!record?.mixId) return;
+    const store = readPlaybackStore();
+    store.currentMixId = String(record.mixId);
+    store.items[String(record.mixId)] = record;
+    writePlaybackStore(store);
+  }
+
+  function syncDirtyProgress() {
+    if (!IS_AUTHENTICATED) return;
+    const dirtyRecords = Object.values(readPlaybackStore().items)
+      .filter((record) => record?.dirty)
+      .sort((left, right) => Number(right.updatedAt || 0) - Number(left.updatedAt || 0))
+      .slice(0, 10);
+    dirtyRecords.forEach((record) => syncProgressRecord(record));
+  }
+
+  async function restoreInitialPlayback() {
+    if (restoreStarted) return;
+    restoreStarted = true;
+    const store = readPlaybackStore();
+    let local = store.items[String(store.currentMixId)] || null;
+    if (IS_AUTHENTICATED && local && !local.dirty && !local.serverUpdatedAt) {
+      local = { ...local, dirty: true };
+      cacheProgressRecord(local);
+    }
+    if (!IS_AUTHENTICATED && local?.track?.isPublic === false) {
+      removeStoredMix(local.mixId);
+    } else if (local?.track?.audioUrl) {
+      restoreTrackData(local.track, local);
+    }
+    if (!IS_AUTHENTICATED || !LATEST_PROGRESS_URL) return;
+    if (local?.dirty) {
+      syncProgressRecord(local);
+      return;
+    }
+    try {
+      const response = await fetch(LATEST_PROGRESS_URL, { headers: { Accept: "application/json" } });
+      if (response.status === 401 || response.status === 403) {
+        clearRestoredPlayer();
+        clearPlaybackStore();
+        return;
+      }
+      if (!response.ok) return;
+      const payload = await response.json();
+      const server = serverProgressRecord(payload.progress);
+      if (!server) {
+        if (local?.track?.isPublic === false) clearRestoredPlayer();
+        return;
+      }
+      const refreshedStore = readPlaybackStore();
+      let latestLocal = refreshedStore.items[String(refreshedStore.currentMixId)] || null;
+      if (latestLocal?.dirty) {
+        syncProgressRecord(latestLocal);
+        return;
+      }
+      if (latestLocal?.track?.isPublic === false && Number(latestLocal.mixId) !== Number(server.mixId)) {
+        clearRestoredPlayer();
+        latestLocal = null;
+      }
+      const localServerTime = Date.parse(latestLocal?.serverUpdatedAt || "") || 0;
+      const serverTime = Date.parse(server.serverUpdatedAt || "") || 0;
+      if (!latestLocal || serverTime > localServerTime) {
+        cacheProgressRecord(server);
+        restoreTrackData(server.track, server);
+      }
+    } catch (error) {
+      // Local restoration remains available while the server is unreachable.
+    }
   }
 
   function setTracklistPanelState(panel, isOpen) {
@@ -840,20 +1324,30 @@
     hasPlaybackStarted = true;
     toggle.textContent = "Ⅱ";
     updatePlayButtons();
-    updateMediaSession();
+    setMediaSessionMetadata();
+    syncMediaSessionState(true);
+    persistProgress({ completed: false });
     syncPlaybackVisuals();
     startPlaybackLoop();
   });
   audio.addEventListener("pause", () => {
+    if (ignoreNextPause) {
+      ignoreNextPause = false;
+      return;
+    }
     stopPlaybackLoop();
     toggle.textContent = "▶";
     updatePlayButtons();
-    updateMediaSession();
+    syncMediaSessionState(true);
     syncPlaybackVisuals();
+    if (!suppressProgressEvents && !restoringPosition && currentTrackData && !audio.ended) {
+      persistProgress({ syncServer: true, keepalive: true });
+    }
   });
   audio.addEventListener("loadedmetadata", () => {
     duration.textContent = formatTime(audio.duration);
-    updateMediaSession();
+    setMediaSessionMetadata();
+    syncMediaSessionState(true);
     renderProgressMarkers();
     updateWaveTimes();
   });
@@ -861,15 +1355,28 @@
     if (!swapToMp3Fallback()) updatePlayButtons();
   });
   audio.addEventListener("timeupdate", () => {
-    updateMediaSession();
+    const now = Date.now();
+    if (now - lastMediaPositionAt >= MEDIA_POSITION_INTERVAL) syncMediaSessionState(true);
+    if (!restoringPosition && now - lastLocalSaveAt >= LOCAL_SAVE_INTERVAL) {
+      const shouldSync = now - lastServerSaveAt >= SERVER_SAVE_INTERVAL;
+      if (shouldSync) lastServerSaveAt = now;
+      persistProgress({ syncServer: shouldSync });
+    }
     syncPlaybackVisuals();
     countStream();
   });
+  audio.addEventListener("seeked", () => {
+    if (restoringPosition || suppressProgressEvents || !currentTrackData) return;
+    syncMediaSessionState(true);
+    persistProgress({ completed: false, syncServer: true });
+  });
+  audio.addEventListener("ratechange", () => syncMediaSessionState(true));
   audio.addEventListener("ended", () => {
     stopPlaybackLoop();
-    updateMediaSession();
+    syncMediaSessionState(true);
     syncPlaybackVisuals();
     updatePlayButtons(false);
+    persistProgress({ completed: true, syncServer: true, keepalive: true });
   });
   audio.addEventListener("volumechange", updateVolumeButton);
 
@@ -1103,7 +1610,42 @@
     renderAllWaveforms();
     renderProgressMarkers();
   });
+  window.addEventListener("online", syncDirtyProgress);
+  window.addEventListener("pagehide", () => {
+    if (!currentTrackData) return;
+    syncMediaSessionState(true);
+    persistProgress({ syncServer: true, keepalive: true });
+  });
+  window.addEventListener("pageshow", () => {
+    if (currentTrackData) {
+      setMediaSessionMetadata(true);
+      syncMediaSessionState(true);
+    }
+    syncDirtyProgress();
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") {
+      if (currentTrackData) {
+        syncMediaSessionState(true);
+        persistProgress({ syncServer: true, keepalive: true });
+      }
+      return;
+    }
+    if (currentTrackData) {
+      setMediaSessionMetadata(true);
+      syncMediaSessionState(true);
+    }
+    syncDirtyProgress();
+  });
+  document.querySelectorAll("[data-player-logout]").forEach((form) => {
+    form.addEventListener("submit", () => {
+      if (currentTrackData) persistProgress({ syncServer: true, keepalive: true });
+      clearPlaybackStore();
+    });
+  });
   window.addEventListener("mixstream:editor-playback", dismissPlayerForEditor);
   updateVolumeButton();
   bindPage();
+  restoreInitialPlayback();
+  syncDirtyProgress();
 })();

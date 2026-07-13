@@ -16,15 +16,78 @@ from pathlib import Path
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render, resolve_url
 from django.templatetags.static import static
-from django.urls import reverse_lazy
+from django.urls import reverse, reverse_lazy
 from django.views.decorators.http import require_GET, require_POST
 
 from .analytics import record_mix_stream, record_mix_view
 from .forms import ALLOWED_AUDIO_CONTENT_TYPES, ALLOWED_AUDIO_EXTENSIONS, MixForm, ProfileForm, TracklistTimestampForm, audio_header_looks_supported, parse_tracklist_upload, tracklist_to_json_payload, tracklist_to_text
-from .models import Genre, Mix, MixTracklistItem, Profile, UploadSession, cover_path, mix_audio_path
+from .models import Genre, Mix, MixPlaybackProgress, MixTracklistItem, Profile, UploadSession, cover_path, mix_audio_path
 
 
 logger = logging.getLogger("mixes.app")
+
+
+def private_json(payload, *, status=200):
+    response = JsonResponse(payload, status=status)
+    response["Cache-Control"] = "private, no-store"
+    response["Vary"] = "Cookie"
+    return response
+
+
+def playback_progress_queryset(user):
+    queryset = (
+        MixPlaybackProgress.objects.filter(user=user, mix__processing_status=Mix.ProcessingStatus.READY)
+        .exclude(mix__opus_file="")
+        .exclude(mix__mp3_file="")
+        .select_related("mix", "mix__owner", "mix__owner__profile")
+    )
+    if not user.is_staff:
+        queryset = queryset.filter(
+            Q(mix__visibility=Mix.Visibility.PUBLIC) | Q(mix__owner=user) | Q(mix__shared_with=user)
+        ).distinct()
+    return queryset
+
+
+def attach_playback_progress(user, mixes):
+    mix_list = list(mixes)
+    progress_by_mix = {}
+    if user.is_authenticated and mix_list:
+        progress_by_mix = {
+            item.mix_id: item
+            for item in MixPlaybackProgress.objects.filter(user=user, mix_id__in=[mix.pk for mix in mix_list])
+        }
+    for mix in mix_list:
+        progress = progress_by_mix.get(mix.pk)
+        mix.resume_position_seconds = progress.position_seconds if progress else 0
+        mix.resume_completed = progress.completed if progress else False
+        mix.resume_updated_at = progress.updated_at.isoformat() if progress else ""
+    return mix_list
+
+
+def mix_player_payload(mix, progress):
+    cover_url = mix.thumb_cover.url if mix.thumb_cover else static("mixes/branding/defaultcover.png")
+    tracklist = [item.as_player_payload() for item in mix.tracklist_items.all() if item.start_seconds is not None]
+    return {
+        "mix_id": mix.pk,
+        "position_seconds": progress.position_seconds,
+        "completed": progress.completed,
+        "updated_at": progress.updated_at.isoformat(),
+        "track": {
+            "mixId": mix.pk,
+            "isPublic": mix.is_public,
+            "audioUrl": reverse("mixes:stream_audio_codec", args=[mix.pk, "opus"]) if mix.is_playable else "",
+            "opusUrl": reverse("mixes:stream_audio_codec", args=[mix.pk, "opus"]) if mix.is_playable else "",
+            "mp3Url": reverse("mixes:stream_audio_codec", args=[mix.pk, "mp3"]) if mix.is_playable else "",
+            "title": mix.title,
+            "artist": mix.owner.profile.display_name,
+            "cover": cover_url,
+            "streamUrl": reverse("mixes:stream_event", args=[mix.pk]),
+            "progressUrl": reverse("mixes:playback_progress", args=[mix.pk]),
+            "detailUrl": mix.get_absolute_url(),
+            "duration": int(mix.duration_seconds or 0),
+            "tracklist": tracklist,
+        },
+    }
 
 
 def social_metadata_for_mix(request, mix):
@@ -162,12 +225,12 @@ def visible_mixes_for(user):
 
 def home(request):
     mixes = Mix.objects.filter(visibility=Mix.Visibility.PUBLIC).select_related("owner", "owner__profile", "primary_genre").prefetch_related("genres")[:24]
-    return render(request, "mixes/home.html", {"mixes": mixes})
+    return render(request, "mixes/home.html", {"mixes": attach_playback_progress(request.user, mixes)})
 
 
 @login_required
 def library(request):
-    mixes = visible_mixes_for(request.user)
+    mixes = attach_playback_progress(request.user, visible_mixes_for(request.user))
     return render(request, "mixes/library.html", {"mixes": mixes})
 
 
@@ -178,7 +241,7 @@ def profile(request, slug):
     mixes = profile_obj.user.mixes.filter(visibility=Mix.Visibility.PUBLIC).select_related("owner", "owner__profile", "primary_genre").prefetch_related("genres")
     if request.user.is_authenticated and (request.user == profile_obj.user or request.user.is_staff):
         mixes = profile_obj.user.mixes.select_related("owner", "owner__profile", "primary_genre").prefetch_related("genres")
-    return render(request, "mixes/profile.html", {"profile_obj": profile_obj, "mixes": mixes})
+    return render(request, "mixes/profile.html", {"profile_obj": profile_obj, "mixes": attach_playback_progress(request.user, mixes)})
 
 
 def detail(request, profile_slug, slug):
@@ -193,6 +256,7 @@ def detail(request, profile_slug, slug):
         return redirect(f"{resolve_url(settings.LOGIN_URL)}?next={request.path}")
     tracklist_items = list(mix.tracklist_items.all())
     tracklist_payload = [item.as_player_payload() for item in tracklist_items if item.start_seconds is not None]
+    attach_playback_progress(request.user, [mix])
     return render(
         request,
         "mixes/detail.html",
@@ -203,6 +267,62 @@ def detail(request, profile_slug, slug):
             "social_meta": social_metadata_for_mix(request, mix),
         },
     )
+
+
+@require_POST
+def playback_progress(request, pk):
+    if not request.user.is_authenticated:
+        return private_json({"error": "Authentication is required."}, status=401)
+    mix = get_object_or_404(Mix, pk=pk)
+    if not mix.can_view(request.user):
+        return private_json({"error": "You cannot access this mix."}, status=403)
+    try:
+        payload = json.loads(request.body.decode() or "{}")
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return private_json({"error": "Playback progress must be valid JSON."}, status=400)
+    if not isinstance(payload, dict):
+        return private_json({"error": "Playback progress must be a JSON object."}, status=400)
+    try:
+        raw_position = payload.get("position_seconds", 0)
+        if isinstance(raw_position, bool):
+            raise ValueError
+        numeric_position = float(raw_position)
+        if not math.isfinite(numeric_position):
+            raise ValueError
+        position_seconds = max(0, int(numeric_position))
+    except (TypeError, ValueError, OverflowError):
+        return private_json({"error": "Playback position is invalid."}, status=400)
+    duration_seconds = int(mix.duration_seconds or 0)
+    if duration_seconds:
+        position_seconds = min(position_seconds, duration_seconds)
+    completed = payload.get("completed", False)
+    if not isinstance(completed, bool):
+        return private_json({"error": "Playback completion state is invalid."}, status=400)
+    if completed and duration_seconds:
+        position_seconds = duration_seconds
+    progress, _ = MixPlaybackProgress.objects.update_or_create(
+        user=request.user,
+        mix=mix,
+        defaults={"position_seconds": position_seconds, "completed": completed},
+    )
+    return private_json(
+        {
+            "mix_id": mix.pk,
+            "position_seconds": progress.position_seconds,
+            "completed": progress.completed,
+            "updated_at": progress.updated_at.isoformat(),
+        }
+    )
+
+
+@require_GET
+def latest_playback_progress(request):
+    if not request.user.is_authenticated:
+        return private_json({"error": "Authentication is required."}, status=401)
+    progress = playback_progress_queryset(request.user).prefetch_related("mix__tracklist_items").order_by("-updated_at").first()
+    if not progress:
+        return private_json({"progress": None})
+    return private_json({"progress": mix_player_payload(progress.mix, progress)})
 
 
 def detail_short(request, share_slug):

@@ -3,6 +3,7 @@ from datetime import timedelta
 from django.contrib.auth.models import User
 from django.core.management import call_command
 from django.core.files.uploadedfile import SimpleUploadedFile
+from django.db import IntegrityError, transaction
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
@@ -11,7 +12,8 @@ from tempfile import TemporaryDirectory
 from mixes.auth import AuthentikOIDCBackend
 from mixes.management.commands.process_mix_media import Command
 from .forms import parse_tracklist_json_file, parse_tracklist_text, parse_tracklist_upload, tracklist_to_json_payload, tracklist_to_text
-from .models import Genre, Mix, MixStreamEvent, MixTracklistItem, MixViewEvent, UploadSession
+from .models import Genre, Mix, MixPlaybackProgress, MixStreamEvent, MixTracklistItem, MixViewEvent, UploadSession
+from .views import attach_playback_progress
 
 
 class MixVisibilityTests(TestCase):
@@ -798,6 +800,182 @@ class MixVisibilityTests(TestCase):
         self.public_mix.refresh_from_db()
         self.assertEqual(self.public_mix.play_count, 1)
         self.assertEqual(MixStreamEvent.objects.filter(mix=self.public_mix).count(), 1)
+
+
+class PlaybackProgressTests(TestCase):
+    def setUp(self):
+        self.owner = User.objects.create_user(username="progress-owner", email="owner@example.com")
+        self.friend = User.objects.create_user(username="progress-friend", email="friend@example.com")
+        self.other = User.objects.create_user(username="progress-other", email="other@example.com")
+        self.public_mix = Mix.objects.create(
+            owner=self.owner,
+            title="Resume Public Mix",
+            audio_file="mixes/source.mp3",
+            opus_file="mixes/processed/public.opus",
+            mp3_file="mixes/processed/public.mp3",
+            duration_seconds=300,
+            processing_status=Mix.ProcessingStatus.READY,
+            visibility=Mix.Visibility.PUBLIC,
+        )
+        self.private_mix = Mix.objects.create(
+            owner=self.owner,
+            title="Resume Private Mix",
+            audio_file="mixes/private-source.mp3",
+            opus_file="mixes/processed/private.opus",
+            mp3_file="mixes/processed/private.mp3",
+            duration_seconds=600,
+            processing_status=Mix.ProcessingStatus.READY,
+            visibility=Mix.Visibility.PRIVATE,
+        )
+        self.private_mix.shared_with.add(self.friend)
+
+    def post_progress(self, mix, payload):
+        return self.client.post(
+            reverse("mixes:playback_progress", args=[mix.pk]),
+            data=json.dumps(payload),
+            content_type="application/json",
+        )
+
+    def test_anonymous_progress_update_is_rejected(self):
+        response = self.post_progress(self.public_mix, {"position_seconds": 42, "completed": False})
+        latest_response = self.client.get(reverse("mixes:latest_playback_progress"))
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        self.assertEqual(latest_response.status_code, 401)
+        self.assertEqual(latest_response["Cache-Control"], "private, no-store")
+        self.assertFalse(MixPlaybackProgress.objects.exists())
+
+    def test_progress_update_upserts_clamps_and_clears_completion(self):
+        self.client.force_login(self.friend)
+
+        first = self.post_progress(self.public_mix, {"position_seconds": 999, "completed": True})
+        second = self.post_progress(self.public_mix, {"position_seconds": 91.8, "completed": False})
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(first.json()["position_seconds"], 300)
+        self.assertTrue(first.json()["completed"])
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(MixPlaybackProgress.objects.count(), 1)
+        progress = MixPlaybackProgress.objects.get()
+        self.assertEqual(progress.position_seconds, 91)
+        self.assertFalse(progress.completed)
+        self.assertEqual(self.public_mix.play_count, 0)
+        self.assertEqual(self.public_mix.unique_listener_count, 0)
+        self.assertFalse(MixStreamEvent.objects.exists())
+
+    def test_progress_rejects_invalid_position(self):
+        self.client.force_login(self.friend)
+
+        response = self.post_progress(self.public_mix, {"position_seconds": "not-a-time"})
+        invalid_shape = self.client.post(
+            reverse("mixes:playback_progress", args=[self.public_mix.pk]),
+            data="[]",
+            content_type="application/json",
+        )
+        invalid_completion = self.post_progress(self.public_mix, {"position_seconds": 10, "completed": "yes"})
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(invalid_shape.status_code, 400)
+        self.assertEqual(invalid_completion.status_code, 400)
+        self.assertFalse(MixPlaybackProgress.objects.exists())
+
+    def test_private_progress_requires_mix_access(self):
+        self.client.force_login(self.other)
+
+        forbidden = self.post_progress(self.private_mix, {"position_seconds": 30})
+
+        self.assertEqual(forbidden.status_code, 403)
+        self.client.force_login(self.friend)
+        allowed = self.post_progress(self.private_mix, {"position_seconds": 30})
+        self.assertEqual(allowed.status_code, 200)
+
+    def test_progress_is_unique_and_cascades_with_mix_and_user(self):
+        MixPlaybackProgress.objects.create(user=self.friend, mix=self.public_mix, position_seconds=10)
+
+        with self.assertRaises(IntegrityError), transaction.atomic():
+            MixPlaybackProgress.objects.create(user=self.friend, mix=self.public_mix, position_seconds=20)
+
+        self.public_mix.delete()
+        self.assertFalse(MixPlaybackProgress.objects.exists())
+        replacement = Mix.objects.create(owner=self.owner, title="Replacement", audio_file="mixes/replacement.mp3")
+        MixPlaybackProgress.objects.create(user=self.friend, mix=replacement, position_seconds=10)
+        self.friend.delete()
+        self.assertFalse(MixPlaybackProgress.objects.exists())
+
+    def test_latest_progress_returns_playable_metadata_and_tracklist(self):
+        item = MixTracklistItem.objects.create(
+            mix=self.public_mix,
+            position=1,
+            title="Resume Track",
+            artist="Resume Artist",
+            start_seconds=60,
+            end_seconds=120,
+        )
+        MixPlaybackProgress.objects.create(user=self.friend, mix=self.public_mix, position_seconds=75)
+        self.client.force_login(self.friend)
+
+        response = self.client.get(reverse("mixes:latest_playback_progress"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Cache-Control"], "private, no-store")
+        payload = response.json()["progress"]
+        self.assertEqual(payload["mix_id"], self.public_mix.pk)
+        self.assertEqual(payload["position_seconds"], 75)
+        self.assertEqual(payload["track"]["mixId"], self.public_mix.pk)
+        self.assertEqual(payload["track"]["audioUrl"], reverse("mixes:stream_audio_codec", args=[self.public_mix.pk, "opus"]))
+        self.assertEqual(payload["track"]["tracklist"], [item.as_player_payload()])
+
+    def test_latest_progress_omits_mix_after_access_is_revoked(self):
+        MixPlaybackProgress.objects.create(user=self.friend, mix=self.private_mix, position_seconds=75)
+        self.private_mix.shared_with.remove(self.friend)
+        self.client.force_login(self.friend)
+
+        response = self.client.get(reverse("mixes:latest_playback_progress"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["progress"])
+
+    def test_latest_progress_skips_unplayable_mix(self):
+        pending_mix = Mix.objects.create(
+            owner=self.owner,
+            title="Pending Mix",
+            audio_file="mixes/pending.mp3",
+            processing_status=Mix.ProcessingStatus.PROCESSING,
+            visibility=Mix.Visibility.PUBLIC,
+        )
+        MixPlaybackProgress.objects.create(user=self.friend, mix=self.public_mix, position_seconds=75)
+        MixPlaybackProgress.objects.create(user=self.friend, mix=pending_mix, position_seconds=10)
+        self.client.force_login(self.friend)
+
+        response = self.client.get(reverse("mixes:latest_playback_progress"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["progress"]["mix_id"], self.public_mix.pk)
+
+    def test_detail_embeds_only_current_users_server_progress(self):
+        MixPlaybackProgress.objects.create(user=self.owner, mix=self.public_mix, position_seconds=42)
+        self.client.force_login(self.owner)
+
+        owner_response = self.client.get(self.public_mix.get_absolute_url())
+        self.client.logout()
+        anonymous_response = self.client.get(self.public_mix.get_absolute_url())
+
+        self.assertContains(owner_response, f'data-mix-id="{self.public_mix.pk}"')
+        self.assertContains(owner_response, 'data-resume-seconds="42"')
+        self.assertContains(anonymous_response, 'data-resume-seconds="0"')
+        self.assertNotContains(anonymous_response, 'data-resume-seconds="42"')
+
+    def test_bulk_progress_attachment_uses_one_progress_query(self):
+        second_mix = Mix.objects.create(owner=self.owner, title="Second Mix", audio_file="mixes/second.mp3")
+        mixes = [self.public_mix, second_mix]
+        MixPlaybackProgress.objects.create(user=self.friend, mix=self.public_mix, position_seconds=42)
+
+        with self.assertNumQueries(1):
+            attached = attach_playback_progress(self.friend, mixes)
+
+        self.assertEqual(attached[0].resume_position_seconds, 42)
+        self.assertEqual(attached[1].resume_position_seconds, 0)
 
 
 class MixProcessingTests(TestCase):

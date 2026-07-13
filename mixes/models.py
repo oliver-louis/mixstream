@@ -288,6 +288,22 @@ class MixTracklistItem(models.Model):
         }
 
 
+class MixPlaybackProgress(models.Model):
+    user = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name="mix_playback_progress")
+    mix = models.ForeignKey(Mix, on_delete=models.CASCADE, related_name="playback_progress")
+    position_seconds = models.PositiveIntegerField(default=0)
+    completed = models.BooleanField(default=False)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-updated_at"]
+        constraints = [models.UniqueConstraint(fields=["user", "mix"], name="unique_mix_progress_per_user")]
+        indexes = [models.Index(fields=["user", "-updated_at"], name="mix_progress_user_updated_idx")]
+
+    def __str__(self):
+        return f"{self.user} · {self.mix} · {self.position_seconds}s"
+
+
 class UploadSession(models.Model):
     class Status(models.TextChoices):
         UPLOADING = "uploading", "Uploading"

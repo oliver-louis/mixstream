@@ -60,6 +60,12 @@
   </div>
   <div class="waveform hero-waveform"
        data-waveform='{{ mix.waveform|default:"[]" }}'
+       data-mix-id="{{ mix.pk }}"
+       data-is-public="{{ mix.is_public|yesno:'true,false' }}"
+       data-progress-url="{% url 'mixes:playback_progress' mix.pk %}"
+       data-resume-seconds="{{ mix.resume_position_seconds|default:0 }}"
+       data-resume-completed="{{ mix.resume_completed|yesno:'true,false' }}"
+       data-resume-updated-at="{{ mix.resume_updated_at }}"
        {% if mix.is_playable %}
        data-audio-url="{% url 'mixes:stream_audio_codec' mix.pk 'opus' %}"
        data-audio-mp3-url="{% url 'mixes:stream_audio_codec' mix.pk 'mp3' %}"
