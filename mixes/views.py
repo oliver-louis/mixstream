@@ -437,7 +437,7 @@ def tracklist_editor(request, pk):
 def tracklist_import_file(request, pk):
     mix = editable_mix_or_403(request.user, pk)
     try:
-        rows = parse_tracklist_upload(request.FILES.get("file"))
+        rows = parse_tracklist_upload(request.FILES.get("file"), allow_invalid_time_ranges=True)
     except Exception as error:
         messages_list = getattr(error, "messages", None)
         return JsonResponse({"error": " ".join(messages_list) if messages_list else str(error)}, status=400)

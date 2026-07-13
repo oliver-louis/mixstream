@@ -11,6 +11,16 @@
     spotify: "Spotify",
   };
 
+  function parseTime(value) {
+    const clean = String(value || "").trim();
+    if (!clean || !timePattern.test(clean)) return null;
+    const parts = clean.split(":").map(Number);
+    const minutes = parts.length === 3 ? parts[1] : parts[0];
+    const seconds = parts[parts.length - 1];
+    if (seconds >= 60 || (parts.length === 3 && minutes >= 60)) return null;
+    return parts.length === 3 ? parts[0] * 3600 + minutes * 60 + seconds : minutes * 60 + seconds;
+  }
+
   function splitArtistTitle(body) {
     const clean = (body || "").trim().replace(/\s+/g, " ");
     const separator = clean.indexOf(" - ");
@@ -107,6 +117,57 @@
     }));
   }
 
+  function cleanImportedJsonRows(payload) {
+    const cleaned = [];
+    payload.forEach((item, offset) => {
+      const rowNumber = offset + 1;
+      if (!item || typeof item !== "object" || Array.isArray(item)) {
+        throw new Error(`Row ${rowNumber}: Track ID must be an object.`);
+      }
+      const title = String(item.title || "").trim().replace(/\s+/g, " ");
+      const artist = String(item.artist || "").trim().replace(/\s+/g, " ");
+      const start = String(item.start || item.start_seconds || "").trim();
+      const end = String(item.end || item.end_seconds || "").trim();
+      const legacyUrl = String(item.url || "").trim();
+      const sourceLinks = item.links && typeof item.links === "object" && !Array.isArray(item.links) ? item.links : {};
+      const linkValues = Object.values(sourceLinks).map((value) => String(value || "").trim());
+      if (![title, artist, start, end, legacyUrl, ...linkValues].some(Boolean)) return;
+      if (!title) throw new Error(`Row ${rowNumber}: Track title is required.`);
+      if (start && parseTime(start) === null) throw new Error(`Row ${rowNumber}: Use mm:ss or hh:mm:ss.`);
+      if (end && parseTime(end) === null) throw new Error(`Row ${rowNumber}: Use mm:ss or hh:mm:ss.`);
+      if (end && !start) throw new Error(`Row ${rowNumber}: Add a start time before using an end time.`);
+
+      const links = {};
+      const candidates = [...Object.entries(sourceLinks), ...(legacyUrl ? [["__legacy__", legacyUrl]] : [])];
+      candidates.forEach(([declaredPlatform, rawUrl]) => {
+        const value = String(rawUrl || "").trim();
+        if (!value) return;
+        let parsed;
+        try {
+          parsed = new URL(value);
+        } catch (error) {
+          throw new Error(`Row ${rowNumber}: Enter a valid URL.`);
+        }
+        if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+          throw new Error(`Row ${rowNumber}: Enter a valid URL.`);
+        }
+        const detected = platformFromUrl(parsed.toString());
+        if (!detected) {
+          throw new Error(`Row ${rowNumber}: Only Discogs, Bandcamp, SoundCloud, YouTube, and Spotify links are supported.`);
+        }
+        if (platformOrder.includes(declaredPlatform) && declaredPlatform !== detected) {
+          throw new Error(`Row ${rowNumber}: ${platformLabels[declaredPlatform]} links must use the correct platform URL.`);
+        }
+        if (links[detected]) {
+          throw new Error(`Row ${rowNumber}: Only one ${platformLabels[detected]} link is allowed per Track ID.`);
+        }
+        links[detected] = parsed.toString();
+      });
+      cleaned.push({ start, end, artist, title, links });
+    });
+    return cleaned;
+  }
+
   function initLinkEditor(row, options) {
     const list = row.querySelector(options.listSelector);
     const input = row.querySelector(options.inputSelector);
@@ -187,8 +248,10 @@
     const importTextarea = editor.querySelector("textarea");
     const importFileButton = editor.querySelector("[data-tracklist-import-file]");
     const fileInput = editor.querySelector("[data-tracklist-file-input]");
+    const validationSummary = editor.querySelector("[data-tracklist-validation-summary]");
     if (!hidden || !rowsRoot || !template) return;
     const importUrl = editor.dataset.importUrl || "";
+    const duration = Number(editor.dataset.duration || 0);
     const csrfToken = editor.closest("form")?.querySelector('input[name="csrfmiddlewaretoken"]')?.value || "";
 
     function readRowsFromInput() {
@@ -209,11 +272,62 @@
       };
     }
 
+    function rowTimeIssues(values) {
+      const startRaw = String(values.start || "").trim();
+      const endRaw = String(values.end || "").trim();
+      const start = parseTime(startRaw);
+      const end = parseTime(endRaw);
+      const blocking = [];
+      const advisory = [];
+      if (startRaw && start === null) blocking.push("Start time must use mm:ss or hh:mm:ss.");
+      if (endRaw && end === null) blocking.push("End time must use mm:ss or hh:mm:ss.");
+      if (end !== null && start === null && !startRaw) blocking.push("Add a start time before using an end time.");
+      if (start !== null && end !== null && end <= start) blocking.push("End time must be after the start time.");
+      if (duration > 0 && start !== null && start >= duration) {
+        advisory.push("This track starts at or after the recording ends.");
+      } else if (duration > 0 && end !== null && end > duration) {
+        advisory.push("This track ends after the recording.");
+      }
+      return { blocking, advisory };
+    }
+
+    function updateValidation() {
+      let blockingCount = 0;
+      let advisoryCount = 0;
+      const rowElements = Array.from(rowsRoot.querySelectorAll("[data-tracklist-row]"));
+      rowElements.forEach((row) => {
+        const issues = rowTimeIssues(rowFromElement(row));
+        if (issues.blocking.length) blockingCount += 1;
+        if (issues.advisory.length) advisoryCount += 1;
+        row.classList.toggle("has-time-error", Boolean(issues.blocking.length));
+        row.classList.toggle("has-runtime-warning", !issues.blocking.length && Boolean(issues.advisory.length));
+        const feedback = row.querySelector("[data-tracklist-time-feedback]");
+        if (feedback) {
+          feedback.textContent = [...issues.blocking, ...issues.advisory].join(" ");
+          feedback.hidden = !feedback.textContent;
+        }
+      });
+      if (validationSummary) {
+        const messages = [];
+        if (blockingCount) {
+          messages.push(`${blockingCount} Track ID${blockingCount === 1 ? " has" : "s have"} a timing issue and must be fixed or removed before saving.`);
+        }
+        if (advisoryCount) {
+          messages.push(`${advisoryCount} Track ID${advisoryCount === 1 ? " extends" : "s extend"} beyond the recording and can still be saved.`);
+        }
+        validationSummary.textContent = messages.join(" ");
+        validationSummary.hidden = !messages.length;
+        validationSummary.classList.toggle("has-blocking-errors", Boolean(blockingCount));
+      }
+      return { blockingCount, advisoryCount };
+    }
+
     function serialize() {
       const rows = Array.from(rowsRoot.querySelectorAll("[data-tracklist-row]"))
         .map(rowFromElement)
         .filter((row) => row.start || row.end || row.artist || row.title || Object.keys(row.links).length);
       hidden.value = JSON.stringify(rows);
+      return updateValidation();
     }
 
     function replaceRows(values) {
@@ -271,7 +385,7 @@
         throw new Error("Track ID JSON could not be read.");
       }
       if (!Array.isArray(payload)) throw new Error("Track ID JSON must contain a list of rows.");
-      return normalizeRows(payload);
+      return cleanImportedJsonRows(payload);
     }
 
     async function importLocalFile(file) {
@@ -338,7 +452,14 @@
         importTextarea?.reportValidity();
       }
     });
-    editor.closest("form")?.addEventListener("submit", serialize);
+    editor.closest("form")?.addEventListener("submit", (event) => {
+      const validation = serialize();
+      if (!validation.blockingCount) return;
+      event.preventDefault();
+      const firstInvalidRow = rowsRoot.querySelector(".has-time-error");
+      firstInvalidRow?.querySelector("[data-tracklist-end], [data-tracklist-start]")?.focus();
+      validationSummary?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
     renderInitialRows();
   }
 

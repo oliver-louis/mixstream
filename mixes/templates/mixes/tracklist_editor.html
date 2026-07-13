@@ -81,6 +81,7 @@
         </div>
       </div>
       <input type="file" accept=".json,.txt,application/json,text/plain" hidden data-editor-file-input>
+      <p class="tracklist-validation-summary" data-editor-validation-summary role="status" hidden></p>
       <div class="timestamp-row-list" data-editor-rows></div>
       <template data-editor-row-template>
         <article class="timestamp-row" data-editor-row>
@@ -100,6 +101,7 @@
               </div>
               <small class="tracklist-link-feedback" data-row-link-feedback></small>
             </div>
+            <small class="tracklist-time-feedback" data-row-time-feedback hidden></small>
           </div>
           <div class="timestamp-row-actions">
             <button class="button secondary" type="button" data-row-set-start>Set start</button>

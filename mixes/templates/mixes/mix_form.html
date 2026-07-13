@@ -27,6 +27,7 @@
           class="tracklist-editor"
           data-tracklist-editor
           data-hidden-input-id="{{ form.tracklist_json.id_for_label }}"
+          data-duration="{{ mix.duration_seconds|default:'' }}"
           {% if mix.pk %}
             data-import-url="{% url 'mixes:tracklist_import_file' mix.pk %}"
             data-export-json-url="{% url 'mixes:tracklist_export_file' mix.pk 'json' %}"
@@ -63,6 +64,7 @@
           {% if not mix.pk %}
             <p class="tracklist-editor-note">Save the mix first to open the interactive Track ID editor.</p>
           {% endif %}
+          <p class="tracklist-validation-summary" data-tracklist-validation-summary role="status" hidden></p>
           <div class="tracklist-rows" data-tracklist-rows></div>
           <template data-tracklist-template>
             <div class="tracklist-row" data-tracklist-row>
@@ -80,6 +82,7 @@
                 <small class="tracklist-link-feedback" data-tracklist-link-feedback></small>
               </div>
               <button class="icon-button" type="button" data-tracklist-remove aria-label="Remove track ID">×</button>
+              <small class="tracklist-time-feedback" data-tracklist-time-feedback hidden></small>
             </div>
           </template>
           <details class="tracklist-import">

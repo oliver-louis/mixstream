@@ -213,12 +213,12 @@ def tracklist_to_text(rows):
     return "\n".join(lines)
 
 
-def parse_tracklist_json_file(file_bytes):
+def parse_tracklist_json_file(file_bytes, *, allow_invalid_time_ranges=False):
     try:
         payload = json.loads((file_bytes or b"").decode("utf-8-sig"))
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise forms.ValidationError("Track ID JSON could not be read.")
-    return clean_tracklist_payload(payload)
+    return clean_tracklist_payload(payload, allow_invalid_time_ranges=allow_invalid_time_ranges)
 
 
 def parse_tracklist_text_file(file_bytes):
@@ -229,7 +229,7 @@ def parse_tracklist_text_file(file_bytes):
     return parse_tracklist_text(raw)
 
 
-def parse_tracklist_upload(uploaded_file):
+def parse_tracklist_upload(uploaded_file, *, allow_invalid_time_ranges=False):
     if not uploaded_file:
         raise forms.ValidationError("Choose a Track ID file to import.")
     suffix = Path(uploaded_file.name or "").suffix.lower()
@@ -239,7 +239,7 @@ def parse_tracklist_upload(uploaded_file):
     if suffix == ".json":
         if content_type and content_type not in TRACKLIST_JSON_CONTENT_TYPES:
             raise forms.ValidationError("Upload a valid .json Track ID file.")
-        return parse_tracklist_json_file(payload)
+        return parse_tracklist_json_file(payload, allow_invalid_time_ranges=allow_invalid_time_ranges)
     if suffix == ".txt":
         if content_type and content_type not in TRACKLIST_TEXT_CONTENT_TYPES:
             raise forms.ValidationError("Upload a valid .txt Track ID file.")
@@ -247,7 +247,7 @@ def parse_tracklist_upload(uploaded_file):
     raise forms.ValidationError("Track ID files must be .json or .txt.")
 
 
-def clean_tracklist_payload(payload):
+def clean_tracklist_payload(payload, *, allow_invalid_time_ranges=False):
     if not isinstance(payload, list):
         raise forms.ValidationError("Track IDs must be a list.")
     rows = []
@@ -274,7 +274,12 @@ def clean_tracklist_payload(payload):
             raise forms.ValidationError(f"Row {index}: {' '.join(error.messages)}")
         if end_seconds is not None and start_seconds is None:
             raise forms.ValidationError(f"Row {index}: Add a start time before using an end time.")
-        if start_seconds is not None and end_seconds is not None and end_seconds <= start_seconds:
+        if (
+            not allow_invalid_time_ranges
+            and start_seconds is not None
+            and end_seconds is not None
+            and end_seconds <= start_seconds
+        ):
             raise forms.ValidationError(f"Row {index}: End time must be after the start time.")
         rows.append(
             {

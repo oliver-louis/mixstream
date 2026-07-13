@@ -22,8 +22,11 @@
     const clean = (value || "").trim();
     if (!clean || !TIME_PATTERN.test(clean)) return null;
     const parts = clean.split(":").map(Number);
-    if (parts.length === 2) return parts[0] * 60 + parts[1];
-    return parts[0] * 3600 + parts[1] * 60 + parts[2];
+    const minutes = parts.length === 3 ? parts[1] : parts[0];
+    const seconds = parts[parts.length - 1];
+    if (seconds >= 60 || (parts.length === 3 && minutes >= 60)) return null;
+    if (parts.length === 2) return minutes * 60 + seconds;
+    return parts[0] * 3600 + minutes * 60 + seconds;
   }
 
   function waveformValues(raw) {
@@ -106,6 +109,7 @@
     const fileInput = root.querySelector("[data-editor-file-input]");
     const rowsRoot = root.querySelector("[data-editor-rows]");
     const template = root.querySelector("[data-editor-row-template]");
+    const validationSummary = root.querySelector("[data-editor-validation-summary]");
     if (!form || !hidden || !canvas || !audio || !rowsRoot || !template) return;
 
     const values = waveformValues(root.dataset.waveform);
@@ -275,13 +279,55 @@
         }));
     }
 
+    function rowTimeIssues(row) {
+      const startRaw = String(row.start || "").trim();
+      const endRaw = String(row.end || "").trim();
+      const start = parseTime(startRaw);
+      const end = parseTime(endRaw);
+      const total = effectiveDuration();
+      const blocking = [];
+      const advisory = [];
+      if (startRaw && start === null) blocking.push("Start time must use mm:ss or hh:mm:ss.");
+      if (endRaw && end === null) blocking.push("End time must use mm:ss or hh:mm:ss.");
+      if (end !== null && start === null && !startRaw) blocking.push("Add a start time before using an end time.");
+      if (start !== null && end !== null && end <= start) blocking.push("End time must be after the start time.");
+      if (total > 0 && start !== null && start >= total) {
+        advisory.push("This track starts at or after the recording ends.");
+      } else if (total > 0 && end !== null && end > total) {
+        advisory.push("This track ends after the recording.");
+      }
+      return { blocking, advisory };
+    }
+
+    function updateValidationSummary() {
+      const issues = rows.map(rowTimeIssues);
+      const blockingCount = issues.filter((item) => item.blocking.length).length;
+      const advisoryCount = issues.filter((item) => item.advisory.length).length;
+      if (validationSummary) {
+        const messages = [];
+        if (blockingCount) {
+          messages.push(`${blockingCount} Track ID${blockingCount === 1 ? " has" : "s have"} a timing issue and must be fixed or removed before saving.`);
+        }
+        if (advisoryCount) {
+          messages.push(`${advisoryCount} Track ID${advisoryCount === 1 ? " extends" : "s extend"} beyond the recording and can still be saved.`);
+        }
+        validationSummary.textContent = messages.join(" ");
+        validationSummary.hidden = !messages.length;
+        validationSummary.classList.toggle("has-blocking-errors", Boolean(blockingCount));
+      }
+      return { blockingCount, advisoryCount };
+    }
+
     function renderRows() {
       rowsRoot.innerHTML = "";
       const fragment = document.createDocumentFragment();
       rows.forEach((row) => {
         const node = template.content.firstElementChild.cloneNode(true);
+        const timeIssues = rowTimeIssues(row);
         node.dataset.rowId = row.id;
         node.classList.toggle("is-selected", row.id === selectedId);
+        node.classList.toggle("has-time-error", Boolean(timeIssues.blocking.length));
+        node.classList.toggle("has-runtime-warning", !timeIssues.blocking.length && Boolean(timeIssues.advisory.length));
         const selectButton = node.querySelector("[data-row-select]");
         const startChip = node.querySelector("[data-row-start]");
         const endChip = node.querySelector("[data-row-end]");
@@ -291,10 +337,15 @@
         const linkInput = node.querySelector("[data-row-link-input]");
         const linkAdd = node.querySelector("[data-row-link-add]");
         const linkFeedback = node.querySelector("[data-row-link-feedback]");
+        const timeFeedback = node.querySelector("[data-row-time-feedback]");
         startChip.textContent = row.start || "Start unset";
         endChip.textContent = row.end || "End unset";
         startChip.classList.toggle("is-set", Boolean(row.start));
         endChip.classList.toggle("is-set", Boolean(row.end));
+        if (timeFeedback) {
+          timeFeedback.textContent = [...timeIssues.blocking, ...timeIssues.advisory].join(" ");
+          timeFeedback.hidden = !timeFeedback.textContent;
+        }
         artistInput.value = row.artist;
         titleInput.value = row.title;
         selectButton.addEventListener("click", () => selectRow(row.id));
@@ -373,6 +424,7 @@
         fragment.appendChild(node);
       });
       rowsRoot.appendChild(fragment);
+      updateValidationSummary();
     }
 
     function renderWaveform() {
@@ -484,12 +536,24 @@
     });
     audio.addEventListener("pause", syncTime);
     audio.addEventListener("timeupdate", syncTime);
-    audio.addEventListener("loadedmetadata", syncTime);
+    audio.addEventListener("loadedmetadata", () => {
+      renderRows();
+      syncTime();
+    });
 
     window.addEventListener("resize", renderWaveform);
-    form.addEventListener("submit", () => {
+    form.addEventListener("submit", (event) => {
       sortRows();
       syncHidden();
+      const validation = updateValidationSummary();
+      if (validation.blockingCount) {
+        event.preventDefault();
+        const invalidRow = rows.find((row) => rowTimeIssues(row).blocking.length);
+        if (invalidRow) selectedId = invalidRow.id;
+        renderRows();
+        rowsRoot.querySelector(".has-time-error")?.scrollIntoView({ block: "center", behavior: "smooth" });
+        return;
+      }
       dirty = false;
     });
     window.addEventListener("beforeunload", (event) => {

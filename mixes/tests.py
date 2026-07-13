@@ -316,6 +316,8 @@ class MixVisibilityTests(TestCase):
 
     def test_tracklist_editor_renders_for_owner(self):
         MixTracklistItem.objects.create(mix=self.public_mix, position=1, title="Existing Track", artist="Artist", start_seconds=42)
+        self.public_mix.duration_seconds = 4102
+        self.public_mix.save(update_fields=["duration_seconds"])
         self.client.force_login(self.owner)
 
         response = self.client.get(reverse("mixes:tracklist_editor", args=[self.public_mix.pk]))
@@ -324,6 +326,8 @@ class MixVisibilityTests(TestCase):
         self.assertContains(response, "Waveform editor")
         self.assertContains(response, "Save Track IDs")
         self.assertContains(response, "Existing Track")
+        self.assertContains(response, 'data-duration="4102"')
+        self.assertContains(response, "data-editor-validation-summary")
 
     def test_tracklist_editor_save_updates_structured_track_ids(self):
         self.client.force_login(self.owner)
@@ -373,6 +377,18 @@ class MixVisibilityTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Add a start time before using an end time.")
+
+    def test_tracklist_editor_rejects_equal_start_and_end(self):
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse("mixes:tracklist_editor", args=[self.public_mix.pk]),
+            {"tracklist_json": json.dumps([{"start": "33:36", "end": "33:36", "title": "Needs review"}])},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "End time must be after the start time.")
+        self.assertFalse(self.public_mix.tracklist_items.exists())
 
     def test_tracklist_editor_rejects_unsupported_link_domain(self):
         self.client.force_login(self.owner)
@@ -431,6 +447,33 @@ class MixVisibilityTests(TestCase):
         self.assertEqual(restored[0]["start_seconds"], 30)
         self.assertEqual(restored[0]["end_seconds"], 90)
         self.assertEqual(restored[0]["links"], {"spotify": "https://open.spotify.com/track/123"})
+
+    def test_tracklist_json_file_only_allows_invalid_range_in_tolerant_mode(self):
+        payload = json.dumps([{"title": "Zero length", "start": "33:36", "end": "33:36"}]).encode()
+
+        with self.assertRaisesMessage(Exception, "End time must be after the start time."):
+            parse_tracklist_json_file(payload)
+
+        restored = parse_tracklist_json_file(payload, allow_invalid_time_ranges=True)
+        self.assertEqual(restored[0]["start_seconds"], 2016)
+        self.assertEqual(restored[0]["end_seconds"], 2016)
+
+    def test_tolerant_tracklist_json_still_rejects_structural_errors(self):
+        with self.assertRaisesMessage(Exception, "Track title is required"):
+            parse_tracklist_json_file(
+                json.dumps([{"start": "1:00", "end": "1:00"}]).encode(),
+                allow_invalid_time_ranges=True,
+            )
+        with self.assertRaisesMessage(Exception, "Use mm:ss or hh:mm:ss"):
+            parse_tracklist_json_file(
+                json.dumps([{"title": "Bad time", "start": "not-a-time"}]).encode(),
+                allow_invalid_time_ranges=True,
+            )
+        with self.assertRaisesMessage(Exception, "not-supported.example is not supported"):
+            parse_tracklist_json_file(
+                json.dumps([{"title": "Bad link", "links": {"soundcloud": "https://not-supported.example/track"}}]).encode(),
+                allow_invalid_time_ranges=True,
+            )
 
     def test_tracklist_text_export_includes_multiple_links_in_platform_order(self):
         rows = [
@@ -513,6 +556,52 @@ class MixVisibilityTests(TestCase):
         self.assertEqual(payload["rows"][0]["end"], "18:20")
         self.assertEqual(payload["rows"][0]["artist"], "Artist Name")
         self.assertEqual(payload["rows"][0]["links"]["soundcloud"], "https://soundcloud.com/artist/track")
+
+    def test_tracklist_import_file_endpoint_preserves_all_rows_with_invalid_ranges(self):
+        rows = [
+            {"title": f"Track {index}", "start": f"{index}:00", "end": f"{index}:30"}
+            for index in range(1, 34)
+        ]
+        rows[16].update({"start": "33:36", "end": "33:36"})
+        rows[18].update({"start": "36:15", "end": "36:15"})
+        rows[31].update({"start": "1:04:43", "end": "1:09:06"})
+        rows[32].update({"start": "1:07:27", "end": "1:08:22"})
+        self.public_mix.duration_seconds = 4102
+        self.public_mix.save(update_fields=["duration_seconds"])
+        self.client.force_login(self.owner)
+        upload = SimpleUploadedFile(
+            "reverb.json",
+            json.dumps(rows).encode(),
+            content_type="application/json",
+        )
+
+        response = self.client.post(reverse("mixes:tracklist_import_file", args=[self.public_mix.pk]), {"file": upload})
+
+        self.assertEqual(response.status_code, 200)
+        imported = response.json()["rows"]
+        self.assertEqual(len(imported), 33)
+        by_title = {row["title"]: row for row in imported}
+        self.assertEqual(by_title["Track 17"]["start"], "33:36")
+        self.assertEqual(by_title["Track 17"]["end"], "33:36")
+        self.assertEqual(by_title["Track 19"]["start"], "36:15")
+        self.assertEqual(by_title["Track 19"]["end"], "36:15")
+        self.assertEqual(by_title["Track 32"]["end"], "1:09:06")
+        self.assertEqual(by_title["Track 33"]["end"], "1:08:22")
+
+    def test_tracklist_editor_allows_saving_a_track_past_the_mix_duration(self):
+        self.public_mix.duration_seconds = 300
+        self.public_mix.save(update_fields=["duration_seconds"])
+        self.client.force_login(self.owner)
+
+        response = self.client.post(
+            reverse("mixes:tracklist_editor", args=[self.public_mix.pk]),
+            {"tracklist_json": json.dumps([{"title": "Long outro", "start": "4:30", "end": "5:30"}])},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        saved = self.public_mix.tracklist_items.get()
+        self.assertEqual(saved.start_seconds, 270)
+        self.assertEqual(saved.end_seconds, 330)
 
     def test_tracklist_import_file_endpoint_rejects_invalid_file(self):
         self.client.force_login(self.owner)
