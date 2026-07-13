@@ -15,6 +15,7 @@ from pathlib import Path
 
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import get_object_or_404, redirect, render, resolve_url
+from django.templatetags.static import static
 from django.urls import reverse_lazy
 from django.views.decorators.http import require_GET, require_POST
 
@@ -24,6 +25,23 @@ from .models import Genre, Mix, MixTracklistItem, Profile, UploadSession, cover_
 
 
 logger = logging.getLogger("mixes.app")
+
+
+def social_metadata_for_mix(request, mix):
+    if not mix.is_public:
+        return None
+    description = f"Mix by {mix.owner.profile.display_name}"
+    if mix.formatted_duration:
+        description += f" · {mix.formatted_duration}"
+    description += " on MixStream."
+    cover_url = mix.display_cover.url if mix.display_cover else static("mixes/branding/defaultcover.png")
+    return {
+        "title": mix.title,
+        "description": description,
+        "canonical_url": request.build_absolute_uri(mix.get_absolute_url()),
+        "image_url": request.build_absolute_uri(cover_url),
+        "image_alt": f"Cover artwork for {mix.title}",
+    }
 
 
 def upload_form_without_required_audio(post_data, files, *, owner):
@@ -175,7 +193,16 @@ def detail(request, profile_slug, slug):
         return redirect(f"{resolve_url(settings.LOGIN_URL)}?next={request.path}")
     tracklist_items = list(mix.tracklist_items.all())
     tracklist_payload = [item.as_player_payload() for item in tracklist_items if item.start_seconds is not None]
-    return render(request, "mixes/detail.html", {"mix": mix, "tracklist_items": tracklist_items, "tracklist_payload": tracklist_payload})
+    return render(
+        request,
+        "mixes/detail.html",
+        {
+            "mix": mix,
+            "tracklist_items": tracklist_items,
+            "tracklist_payload": tracklist_payload,
+            "social_meta": social_metadata_for_mix(request, mix),
+        },
+    )
 
 
 def detail_short(request, share_slug):

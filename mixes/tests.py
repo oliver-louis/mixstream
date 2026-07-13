@@ -46,6 +46,61 @@ class MixVisibilityTests(TestCase):
         response = self.client.get(self.public_mix.get_absolute_url())
         self.assertEqual(response.status_code, 200)
 
+    def test_public_mix_has_absolute_social_preview_metadata(self):
+        response = self.client.get(self.public_mix.get_absolute_url(), secure=True)
+
+        canonical_url = "https://testserver/@owner-handle/public-set/"
+        default_cover_url = "https://testserver/static/mixes/branding/defaultcover.png"
+        self.assertContains(response, '<meta name="description" content="Mix by owner on MixStream.">')
+        self.assertContains(response, '<meta name="robots" content="index,follow,max-image-preview:large">')
+        self.assertContains(response, f'<link rel="canonical" href="{canonical_url}">')
+        self.assertContains(response, '<meta property="og:title" content="Public Set">')
+        self.assertContains(response, '<meta property="og:type" content="website">')
+        self.assertContains(response, f'<meta property="og:url" content="{canonical_url}">')
+        self.assertContains(response, f'<meta property="og:image" content="{default_cover_url}">')
+        self.assertContains(response, '<meta property="og:image:alt" content="Cover artwork for Public Set">')
+        self.assertContains(response, '<meta property="og:site_name" content="MixStream">')
+        self.assertContains(response, '<meta name="twitter:card" content="summary_large_image">')
+        self.assertContains(response, f'<meta name="twitter:image" content="{default_cover_url}">')
+
+    def test_public_mix_social_metadata_uses_cover_duration_and_escaped_text(self):
+        self.public_mix.title = 'Night & "Day"'
+        self.public_mix.duration_seconds = 4102
+        self.public_mix.cover_webp_large = "covers/processed/1/social.webp"
+        self.public_mix.save(update_fields=["title", "duration_seconds", "cover_webp_large"])
+        self.owner.profile.display_name = 'DJ & "Ollie"'
+        self.owner.profile.save(update_fields=["display_name"])
+
+        response = self.client.get(self.public_mix.get_absolute_url(), secure=True)
+
+        expected_description = "Mix by DJ &amp; &quot;Ollie&quot; · 1:08:22 on MixStream."
+        self.assertContains(response, '<meta property="og:title" content="Night &amp; &quot;Day&quot;">')
+        self.assertContains(response, f'<meta property="og:description" content="{expected_description}">')
+        self.assertContains(response, '<meta property="og:image" content="https://testserver/media/covers/processed/1/social.webp">')
+        self.assertContains(response, '<meta property="og:image:alt" content="Cover artwork for Night &amp; &quot;Day&quot;">')
+        self.assertContains(response, f'<meta name="twitter:description" content="{expected_description}">')
+
+    def test_public_mix_social_metadata_uses_uploaded_cover_when_processed_cover_is_unavailable(self):
+        self.public_mix.cover_image = "covers/1/original.jpg"
+        self.public_mix.save(update_fields=["cover_image"])
+
+        response = self.client.get(self.public_mix.get_absolute_url(), secure=True)
+
+        self.assertContains(response, '<meta property="og:image" content="https://testserver/media/covers/1/original.jpg">')
+        self.assertContains(response, '<meta name="twitter:image" content="https://testserver/media/covers/1/original.jpg">')
+
+    def test_private_mix_has_no_social_preview_metadata(self):
+        for viewer in (self.owner, self.friend):
+            with self.subTest(viewer=viewer.username):
+                self.client.force_login(viewer)
+                response = self.client.get(self.private_mix.get_absolute_url(), secure=True)
+
+                self.assertContains(response, '<meta name="robots" content="noindex,nofollow,noarchive">')
+                self.assertNotContains(response, 'rel="canonical"')
+                self.assertNotContains(response, 'property="og:')
+                self.assertNotContains(response, 'name="twitter:')
+                self.assertNotContains(response, '<meta name="description"')
+
     def test_mix_absolute_url_uses_profile_slug_not_username(self):
         self.assertEqual(self.public_mix.get_absolute_url(), "/@owner-handle/public-set/")
 

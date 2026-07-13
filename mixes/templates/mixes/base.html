@@ -5,6 +5,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{% block title %}MixStream{% endblock %}</title>
+  {% block head_meta %}{% endblock %}
   <link rel="icon" type="image/png" sizes="18x18" href="{% static 'mixes/branding/favicon-18-stroke.png' %}">
   <link rel="icon" type="image/png" sizes="28x28" href="{% static 'mixes/branding/favicon-28-stroke.png' %}">
   <link rel="stylesheet" href="{% static 'mixes/css/app.css' %}?v={{ STATIC_VERSION }}">

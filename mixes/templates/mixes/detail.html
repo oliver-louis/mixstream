@@ -1,5 +1,26 @@
 {% extends "mixes/base.html" %}
 {% block title %}{{ mix.title }} · MixStream{% endblock %}
+{% block head_meta %}
+  {% if social_meta %}
+    <meta name="description" content="{{ social_meta.description }}">
+    <meta name="robots" content="index,follow,max-image-preview:large">
+    <link rel="canonical" href="{{ social_meta.canonical_url }}">
+    <meta property="og:title" content="{{ social_meta.title }}">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="{{ social_meta.canonical_url }}">
+    <meta property="og:image" content="{{ social_meta.image_url }}">
+    <meta property="og:image:alt" content="{{ social_meta.image_alt }}">
+    <meta property="og:description" content="{{ social_meta.description }}">
+    <meta property="og:site_name" content="MixStream">
+    <meta name="twitter:card" content="summary_large_image">
+    <meta name="twitter:title" content="{{ social_meta.title }}">
+    <meta name="twitter:description" content="{{ social_meta.description }}">
+    <meta name="twitter:image" content="{{ social_meta.image_url }}">
+    <meta name="twitter:image:alt" content="{{ social_meta.image_alt }}">
+  {% else %}
+    <meta name="robots" content="noindex,nofollow,noarchive">
+  {% endif %}
+{% endblock %}
 {% block body_class %}mix-detail-page{% endblock %}
 {% block content %}
 {% load static %}
