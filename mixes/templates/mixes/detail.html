@@ -99,11 +99,11 @@
         <ol class="tracklist-list">
           {% for item in tracklist_items %}
             <li class="tracklist-item" id="track-id-{{ item.position|default:forloop.counter }}" data-track-id-key="{{ item.position|default:forloop.counter }}">
-              <button class="tracklist-time tracklist-time-button" type="button" data-track-seek-seconds="{{ item.start_seconds|default:0 }}">
+              <button class="tracklist-time tracklist-time-button" type="button" data-track-seek-seconds="{{ item.start_seconds|default:0 }}" aria-label="Seek to {{ item.title }}{% if item.formatted_start %} at {{ item.formatted_start }}{% endif %}">
                 {% if item.formatted_start %}
-                  {{ item.formatted_start }}{% if item.formatted_end %}-{{ item.formatted_end }}{% endif %}
+                  <span class="tracklist-time-start">{{ item.formatted_start }}</span>{% if item.formatted_end %}<span class="tracklist-time-separator">-</span><span class="tracklist-time-end">{{ item.formatted_end }}</span>{% endif %}
                 {% else %}
-                  {{ forloop.counter }}
+                  <span class="tracklist-time-position">{{ forloop.counter }}</span>
                 {% endif %}
               </button>
               <span class="tracklist-copy">
@@ -137,11 +137,11 @@
       <ol class="tracklist-list">
         {% for item in tracklist_items %}
           <li class="tracklist-item" id="mobile-track-id-{{ item.position|default:forloop.counter }}" data-track-id-key="{{ item.position|default:forloop.counter }}">
-            <button class="tracklist-time tracklist-time-button" type="button" data-track-seek-seconds="{{ item.start_seconds|default:0 }}">
+            <button class="tracklist-time tracklist-time-button" type="button" data-track-seek-seconds="{{ item.start_seconds|default:0 }}" aria-label="Seek to {{ item.title }}{% if item.formatted_start %} at {{ item.formatted_start }}{% endif %}">
               {% if item.formatted_start %}
-                {{ item.formatted_start }}{% if item.formatted_end %}-{{ item.formatted_end }}{% endif %}
+                <span class="tracklist-time-start">{{ item.formatted_start }}</span>{% if item.formatted_end %}<span class="tracklist-time-separator">-</span><span class="tracklist-time-end">{{ item.formatted_end }}</span>{% endif %}
               {% else %}
-                {{ forloop.counter }}
+                <span class="tracklist-time-position">{{ forloop.counter }}</span>
               {% endif %}
             </button>
             <span class="tracklist-copy">

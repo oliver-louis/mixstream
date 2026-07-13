@@ -541,7 +541,8 @@ select:focus-visible {
   font-size: 12px;
   font-weight: 900;
   white-space: nowrap;
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   width: 100%;
 }
 .tracklist-time-button {
@@ -1648,6 +1649,19 @@ select:focus-visible {
   }
   .mobile-tracklist-panel .tracklist-list {
     margin-top: 0;
+  }
+  .mobile-tracklist-panel .tracklist-item {
+    grid-template-columns: 60px minmax(0, 1fr) auto;
+    gap: 10px;
+  }
+  .mobile-tracklist-panel .tracklist-time {
+    display: grid;
+    width: 60px;
+    line-height: 1.3;
+    font-variant-numeric: tabular-nums;
+  }
+  .mobile-tracklist-panel .tracklist-time-separator {
+    display: none;
   }
   .play-big {
     width: 46px;

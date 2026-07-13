@@ -697,6 +697,36 @@ class MixVisibilityTests(TestCase):
         self.assertContains(response, 'data-current-track-list')
         self.assertContains(response, "discogs.png")
 
+    def test_detail_renders_split_timestamps_in_desktop_and_mobile_tracklists(self):
+        MixTracklistItem.objects.create(
+            mix=self.public_mix,
+            position=1,
+            title="Timed Track",
+            artist="Artist",
+            start_seconds=30,
+            end_seconds=90,
+        )
+        MixTracklistItem.objects.create(
+            mix=self.public_mix,
+            position=2,
+            title="Start Only",
+            start_seconds=120,
+        )
+        MixTracklistItem.objects.create(
+            mix=self.public_mix,
+            position=3,
+            title="Untimed Track",
+        )
+
+        response = self.client.get(self.public_mix.get_absolute_url())
+
+        self.assertContains(response, '<span class="tracklist-time-start">0:30</span>', count=2)
+        self.assertContains(response, '<span class="tracklist-time-separator">-</span>', count=2)
+        self.assertContains(response, '<span class="tracklist-time-end">1:30</span>', count=2)
+        self.assertContains(response, '<span class="tracklist-time-start">2:00</span>', count=2)
+        self.assertContains(response, '<span class="tracklist-time-position">3</span>', count=2)
+        self.assertContains(response, 'aria-label="Seek to Timed Track at 0:30"', count=2)
+
     def test_hidden_view_count_hides_all_public_stats(self):
         self.public_mix.hide_view_count = True
         self.public_mix.view_count = 12
