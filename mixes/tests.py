@@ -48,6 +48,12 @@ class MixVisibilityTests(TestCase):
         response = self.client.get(self.public_mix.get_absolute_url())
         self.assertEqual(response.status_code, 200)
 
+    def test_global_player_does_not_preload_audio_in_idle_tabs(self):
+        response = self.client.get(self.public_mix.get_absolute_url())
+
+        self.assertContains(response, '<audio data-player-audio preload="none"></audio>')
+        self.assertNotContains(response, '<audio data-player-audio preload="metadata"></audio>')
+
     def test_public_mix_has_absolute_social_preview_metadata(self):
         response = self.client.get(self.public_mix.get_absolute_url(), secure=True)
 

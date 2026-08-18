@@ -56,6 +56,7 @@
   let positionRestoreGeneration = 0;
   let suppressProgressEvents = false;
   let ignoreNextPause = false;
+  let pendingPlaybackRestore = null;
   const progressSyncInFlight = new Set();
   const queuedProgressSyncs = new Map();
 
@@ -66,6 +67,13 @@
     const seconds = Math.floor(value % 60).toString().padStart(2, "0");
     if (hours) return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds}`;
     return `${minutes}:${seconds}`;
+  }
+
+  function playbackPosition() {
+    if (!audio.hasAttribute("src") && pendingPlaybackRestore) {
+      return pendingPlaybackRestore.completed ? 0 : Math.max(0, Number(pendingPlaybackRestore.position || 0));
+    }
+    return Math.max(0, Number(audio.currentTime || 0));
   }
 
   function absoluteUrl(url) {
@@ -180,12 +188,16 @@
     const key = String(currentTrackData.mixId);
     const previous = store.items[key] || {};
     const total = audio.duration || Number(currentTrackData.duration || 0);
-    const position = completed && total ? total : Math.max(0, Math.min(total || Number.MAX_SAFE_INTEGER, audio.currentTime || 0));
+    const preserveDeferredCompletion = !audio.hasAttribute("src") && Boolean(pendingPlaybackRestore?.completed);
+    const recordCompleted = completed || preserveDeferredCompletion;
+    const position = recordCompleted && total
+      ? total
+      : Math.max(0, Math.min(total || Number.MAX_SAFE_INTEGER, playbackPosition()));
     const record = {
       mixId: Number(currentTrackData.mixId),
       position,
       duration: Number(total || 0),
-      completed: Boolean(completed),
+      completed: recordCompleted,
       updatedAt: Date.now(),
       serverUpdatedAt: previous.serverUpdatedAt || "",
       dirty: IS_AUTHENTICATED,
@@ -312,7 +324,7 @@
         navigator.mediaSession.setPositionState({
           duration: total,
           playbackRate: audio.playbackRate || 1,
-          position: Math.max(0, Math.min(total, audio.currentTime || 0)),
+          position: Math.max(0, Math.min(total, playbackPosition())),
         });
         lastMediaPositionAt = Date.now();
       } catch (error) {
@@ -517,7 +529,7 @@
     let startTime = 0;
     const activate = (event) => {
       if (!preferredAudioUrl(root)) return;
-      if (currentTrack !== root) loadTrack(root, false);
+      if (currentTrack !== root || !audio.hasAttribute("src")) loadTrack(root, false);
       seekToRatio(pointerRatio(event, canvas));
       triggerSeekCue(root, audio.currentTime);
       playAudio();
@@ -541,7 +553,7 @@
       startTime = currentTrack === root ? audio.currentTime : 0;
       canvas.setPointerCapture(event.pointerId);
       if (isMobileHero(root)) {
-        if (currentTrack !== root) loadTrack(root, false);
+        if (currentTrack !== root || !audio.hasAttribute("src")) loadTrack(root, false);
         return;
       }
       activate(event);
@@ -560,7 +572,7 @@
     });
     canvas.addEventListener("pointerup", () => {
       if (isMobileHero(root) && !moved) {
-        if (currentTrack !== root) loadTrack(root, false);
+        if (currentTrack !== root || !audio.hasAttribute("src")) loadTrack(root, false);
         if (audio.paused) playAudio();
         else pauseAudio(true);
       }
@@ -580,8 +592,8 @@
     });
   }
 
-  function renderAllWaveforms() {
-    const ratio = audio.duration ? audio.currentTime / audio.duration : 0;
+  function renderAllWaveforms(position = audio.currentTime || 0, total = audio.duration || Number(currentTrackData?.duration || 0)) {
+    const ratio = total ? position / total : 0;
     document.querySelectorAll("[data-waveform]").forEach((root) => {
       if (!root._waveformCanvas) return;
       const isCurrent = isCurrentRoot(root);
@@ -655,9 +667,9 @@
     updateProgressMarkersState();
   }
 
-  function updateProgressMarkersState() {
+  function updateProgressMarkersState(position = audio.currentTime || 0) {
     if (!progressMarkers) return;
-    const seconds = audio.currentTime || 0;
+    const seconds = Math.max(0, Number(position || 0));
     progressMarkers.querySelectorAll(".player-progress-marker").forEach((marker) => {
       const startSeconds = Number(marker.dataset.startSeconds);
       marker.classList.toggle("is-played", Number.isFinite(startSeconds) && seconds >= startSeconds);
@@ -774,6 +786,23 @@
     }
   }
 
+  function deferPlaybackLoading(saved) {
+    // Restore the player UI without opening a media connection in every idle tab.
+    const total = Number(currentTrackData?.duration || saved?.duration || 0);
+    const completed = Boolean(saved?.completed);
+    const position = completed ? 0 : Math.max(0, Math.min(total || Number.MAX_SAFE_INTEGER, Number(saved?.position || 0)));
+    pendingPlaybackRestore = {
+      position: Number(saved?.position || 0),
+      completed,
+    };
+    time.textContent = formatTime(position);
+    duration.textContent = formatTime(Math.max(0, total - position));
+    if (progress) progress.style.transform = `scaleX(${total ? position / total : 0})`;
+    updateProgressMarkersState(position);
+    renderAllWaveforms(position, total);
+    syncMediaSessionState(true);
+  }
+
   function trackDataFromRoot(root) {
     return {
       mixId: Number(root.dataset.mixId || 0),
@@ -792,7 +821,7 @@
     };
   }
 
-  function loadTrack(source, autoplay = true, restoreProgress = null) {
+  function loadTrack(source, autoplay = true, restoreProgress = null, { deferMedia = false } = {}) {
     const root = resolveTrackRoot(source);
     const audioUrl = preferredAudioUrl(root);
     if (!audioUrl) return;
@@ -806,8 +835,18 @@
     streamCounted = false;
     cueOverride = null;
     hasPlaybackStarted = false;
-    if (audio.src !== new URL(currentTrackData.audioUrl, window.location.href).href) {
+    const saved = restoreProgress || preferredProgressForRoot(root);
+    if (deferMedia) {
+      if (audio.hasAttribute("src")) {
+        suppressProgressEvents = true;
+        audio.pause();
+        audio.removeAttribute("src");
+        audio.load();
+        suppressProgressEvents = false;
+      }
+    } else if (audio.src !== new URL(currentTrackData.audioUrl, window.location.href).href) {
       if (!audio.paused) ignoreNextPause = true;
+      pendingPlaybackRestore = null;
       audio.src = currentTrackData.audioUrl;
     }
     title.textContent = currentTrackData.title;
@@ -817,8 +856,9 @@
     renderProgressMarkers();
     player.hidden = false;
     renderAllWaveforms();
-    const saved = restoreProgress || preferredProgressForRoot(root);
-    if (saved && (Number(saved.position || 0) > 0 || saved.completed)) {
+    if (deferMedia) {
+      deferPlaybackLoading(saved);
+    } else if (saved && (Number(saved.position || 0) > 0 || saved.completed)) {
       applyPlaybackPosition(saved.position, saved.completed, autoplay ? playAudio : null);
     } else if (autoplay) {
       playAudio();
@@ -835,7 +875,7 @@
       (root) => Number(root.dataset.mixId || 0) === Number(trackData.mixId),
     );
     if (pageRoot) {
-      loadTrack(pageRoot, false, saved);
+      loadTrack(pageRoot, false, saved, { deferMedia: true });
       return true;
     }
     currentTrack = null;
@@ -849,14 +889,13 @@
     streamCounted = false;
     cueOverride = null;
     hasPlaybackStarted = false;
-    audio.src = currentTrackData.audioUrl;
     title.textContent = currentTrackData.title;
     artist.textContent = currentTrackData.artist;
     setArtwork(cover, currentTrackData.cover);
     setMediaSessionMetadata(true);
     player.hidden = false;
     renderProgressMarkers();
-    applyPlaybackPosition(saved?.position || 0, Boolean(saved?.completed));
+    deferPlaybackLoading(saved);
     updatePlayButtons(false);
     return true;
   }
@@ -883,6 +922,7 @@
     currentStreamUrl = "";
     currentTrack = null;
     currentTrackData = null;
+    pendingPlaybackRestore = null;
     streamCounted = false;
     cueOverride = null;
     hasPlaybackStarted = false;
@@ -915,7 +955,17 @@
   }
 
   function playAudio() {
+    if (!currentTrackData?.audioUrl) return;
     mobilePauseIconHeld = false;
+    if (!audio.hasAttribute("src")) {
+      const deferred = pendingPlaybackRestore;
+      pendingPlaybackRestore = null;
+      audio.src = currentTrackData.audioUrl;
+      if (deferred && (Number(deferred.position || 0) > 0 || deferred.completed)) {
+        applyPlaybackPosition(deferred.position, deferred.completed, playAudio);
+        return;
+      }
+    }
     const saved = storedProgressForMix(currentTrackData?.mixId);
     if (audio.ended || saved?.completed) {
       audio.currentTime = 0;
@@ -950,6 +1000,7 @@
     currentStreamUrl = "";
     currentTrack = null;
     currentTrackData = null;
+    pendingPlaybackRestore = null;
     streamCounted = false;
     mobilePauseIconHeld = false;
     cueOverride = null;
@@ -1203,7 +1254,7 @@
         if (!Number.isFinite(seconds)) return;
         const root = resolveTrackRoot(button.closest(".mix-detail") || button);
         if (!preferredAudioUrl(root)) return;
-        if (!isCurrentRoot(root)) {
+        if (!isCurrentRoot(root) || !audio.hasAttribute("src")) {
           loadTrack(root, false);
         }
         const seekToSeconds = () => {
