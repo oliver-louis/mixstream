@@ -48,6 +48,16 @@ class MixVisibilityTests(TestCase):
         response = self.client.get(self.public_mix.get_absolute_url())
         self.assertEqual(response.status_code, 200)
 
+    def test_home_starts_with_public_mixes_without_hero_for_guests_and_members(self):
+        for user in (None, self.owner):
+            if user:
+                self.client.force_login(user)
+            response = self.client.get(reverse("mixes:home"))
+            self.assertContains(response, "Fresh public mixes")
+            self.assertNotContains(response, "Long-form sets without the platform noise.")
+            self.assertNotContains(response, '<section class="hero">')
+            self.assertContains(response, "Public Set")
+
     def test_global_player_does_not_preload_audio_in_idle_tabs(self):
         response = self.client.get(self.public_mix.get_absolute_url())
 

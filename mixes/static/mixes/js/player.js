@@ -1230,9 +1230,20 @@
       button._tracklistToggleBound = true;
       button.setAttribute("aria-expanded", "false");
       button.addEventListener("click", () => {
-        const panel = button.closest(".mix-detail")?.querySelector("[data-mobile-tracklist]");
+        const detail = button.closest(".mix-detail");
+        const panel = detail?.querySelector("[data-mobile-tracklist]");
         if (!panel) return;
-        setTracklistPanelState(panel, panel.hidden);
+        const isOpening = panel.hidden;
+        setTracklistPanelState(panel, isOpening);
+        if (isOpening) {
+          const root = detail.querySelector("[data-waveform]");
+          const activeItem = root && isCurrentRoot(root)
+            ? currentPlayingTracklistItems(currentTrackData?.tracklist, playbackPosition()).find((item) => !item.unknown)
+            : null;
+          const row = activeItem && Array.from(panel.querySelectorAll("[data-track-id-key]"))
+            .find((candidate) => candidate.dataset.trackIdKey === String(activeItem.key));
+          scrollTracklistPanelToRow(panel, row);
+        }
       });
     });
     document.querySelectorAll("[data-tracklist-close]").forEach((button) => {
@@ -1538,6 +1549,18 @@
     });
   }
 
+  function scrollTracklistPanelToRow(panel, row, behavior = "auto") {
+    if (!panel) return;
+    if (!row) {
+      panel.scrollTop = 0;
+      return;
+    }
+    const panelRect = panel.getBoundingClientRect();
+    const rowRect = row.getBoundingClientRect();
+    const top = panel.scrollTop + rowRect.top - panelRect.top - (panel.clientHeight - rowRect.height) / 2;
+    panel.scrollTo({ top: Math.max(0, top), behavior });
+  }
+
   function jumpToTracklistItem(item) {
     if (!item) return;
     const mobilePanel = document.querySelector("[data-mobile-tracklist]");
@@ -1548,7 +1571,11 @@
     const rows = Array.from(document.querySelectorAll(`[data-track-id-key="${item.key}"]`));
     if (!rows.length) return;
     const target = onMobile && mobilePanel ? rows.find((row) => row.closest("[data-mobile-tracklist]")) || rows[0] : rows.find((row) => !row.closest("[data-mobile-tracklist]")) || rows[0];
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+    if (onMobile && mobilePanel && mobilePanel.contains(target)) {
+      scrollTracklistPanelToRow(mobilePanel, target, "smooth");
+    } else {
+      target.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
     clearTracklistHighlights();
     target.classList.add("is-active");
     window.setTimeout(() => target.classList.remove("is-active"), 1800);
@@ -1566,20 +1593,24 @@
       return;
     }
     const fragment = document.createDocumentFragment();
+    const label = document.createElement("span");
+    label.className = "current-track-label";
+    label.textContent = "Currently Playing:";
+    fragment.appendChild(label);
     activeItems.forEach((item) => {
       const pill = document.createElement("button");
       pill.type = "button";
       pill.className = "current-track-pill";
-      const label = document.createElement("span");
-      label.className = "current-track-label";
-      label.textContent = "Currently Playing:";
-      const artistNode = document.createElement("span");
-      artistNode.className = "current-track-artist";
-      artistNode.textContent = item.artist ? `${item.artist} -` : "";
+      if (item.artist) {
+        const artistNode = document.createElement("span");
+        artistNode.className = "current-track-artist";
+        artistNode.textContent = `${item.artist} -`;
+        pill.appendChild(artistNode);
+      }
       const titleNode = document.createElement("span");
       titleNode.className = "current-track-title";
       titleNode.textContent = item.title;
-      pill.append(label, artistNode, titleNode);
+      pill.appendChild(titleNode);
       if (!item.unknown) {
         pill.addEventListener("click", () => jumpToTracklistItem(item));
       }

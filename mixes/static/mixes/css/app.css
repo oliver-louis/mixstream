@@ -312,6 +312,7 @@ select:focus-visible {
   display: flex;
   flex-wrap: wrap;
   align-content: flex-start;
+  align-items: center;
   gap: 8px;
   max-width: min(66vw, 680px);
   margin-top: 8px;
@@ -349,6 +350,7 @@ select:focus-visible {
   flex: 0 0 auto;
 }
 .current-track-label {
+  align-self: center;
   color: var(--subtle);
   font-weight: 800;
   font-size: 11px;
@@ -359,7 +361,6 @@ select:focus-visible {
   color: var(--muted);
   font-size: 13px;
   font-weight: 700;
-  margin-left: 6px;
 }
 .current-track-title {
   color: var(--ink);
@@ -369,6 +370,9 @@ select:focus-visible {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.current-track-title:first-child {
+  margin-left: 0;
 }
 .edit-inline {
   width: fit-content;
@@ -1509,6 +1513,9 @@ select:focus-visible {
     min-height: 0;
     overflow: visible;
     flex-wrap: wrap;
+  }
+  .current-track-label {
+    flex-basis: 100%;
   }
   .current-track-label,
   .current-track-artist,
