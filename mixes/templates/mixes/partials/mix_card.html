@@ -20,7 +20,7 @@
               data-stream-url="{% url 'mixes:stream_event' mix.pk %}"
               data-detail-url="{{ mix.get_absolute_url }}"
               data-duration="{{ mix.duration_seconds|default:'' }}"
-              {% if not mix.is_playable %}disabled title="{{ mix.get_processing_status_display }}"{% endif %}
+              {% if not mix.is_playable %}disabled title="{% if user == mix.owner or user.is_staff %}{{ mix.get_processing_status_display }}{% else %}Unavailable{% endif %}"{% endif %}
               aria-label="Play {{ mix.title }}">▶</button>
       <div>
         <h3><a href="{{ mix.get_absolute_url }}">{{ mix.title }}</a></h3>
@@ -49,13 +49,17 @@
     </div>
     <p>{{ mix.description|truncatechars:130 }}</p>
     <div class="meta-row">
-      <span>{{ mix.created_at|date:"M j, Y" }}</span>
-      <span>{{ mix.get_visibility_display }}</span>
-      <span>{{ mix.get_processing_status_display }}</span>
-      {% if mix.formatted_duration %}<span>{{ mix.formatted_duration }}</span>{% endif %}
+      <span class="card-date">{{ mix.created_at|date:"M j, Y" }}</span>
+      {% if user.is_authenticated %}<span>{{ mix.get_visibility_display }}</span>{% endif %}
+      {% if user == mix.owner or user.is_staff %}
+        {% if mix.processing_status != "ready" %}<span>{{ mix.get_processing_status_display }}</span>{% endif %}
+      {% endif %}
+      {% if mix.card_duration %}<span class="card-duration">{{ mix.card_duration }}</span>{% endif %}
       {% if not mix.hide_view_count or user == mix.owner or user.is_staff %}
-        <span>{{ mix.view_count }} views{% if mix.hide_view_count %} hidden{% endif %}</span>
-        <span>{{ mix.play_count }} plays</span>
+        <span class="card-view-count" aria-label="{{ mix.view_count }} views{% if mix.hide_view_count %}, hidden from others{% endif %}"{% if mix.hide_view_count %} title="View count hidden from others"{% endif %}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z"/><circle cx="12" cy="12" r="2.5"/></svg>
+          {{ mix.view_count }}
+        </span>
       {% endif %}
     </div>
   </div>

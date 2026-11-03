@@ -201,6 +201,16 @@ class Mix(models.Model):
         return f"{minutes}:{seconds:02d}"
 
     @property
+    def card_duration(self):
+        if not self.duration_seconds:
+            return ""
+        total = int(self.duration_seconds)
+        if total < 5 * 3600:
+            minutes, seconds = divmod(total, 60)
+            return f"{minutes}:{seconds:02d}"
+        return self.formatted_duration
+
+    @property
     def additional_genres(self):
         if not self.primary_genre_id:
             return self.genres.all()

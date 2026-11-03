@@ -14,6 +14,8 @@
   const duration = player.querySelector("[data-player-duration]");
   const volumeToggle = player.querySelector("[data-volume-toggle]");
   const volumeSlider = player.querySelector("[data-volume-slider]");
+  const navToggle = document.querySelector("[data-nav-toggle]");
+  const siteNav = document.querySelector("#site-nav");
   const DEFAULT_COVER = document.body?.dataset.defaultCover || "/static/mixes/branding/defaultcover.png";
   const IS_AUTHENTICATED = document.body?.dataset.authenticated === "true";
   const LATEST_PROGRESS_URL = document.body?.dataset.latestProgressUrl || "";
@@ -57,6 +59,7 @@
   let suppressProgressEvents = false;
   let ignoreNextPause = false;
   let pendingPlaybackRestore = null;
+  let coverLayoutFrame = 0;
   const progressSyncInFlight = new Set();
   const queuedProgressSyncs = new Map();
 
@@ -67,6 +70,21 @@
     const seconds = Math.floor(value % 60).toString().padStart(2, "0");
     if (hours) return `${hours}:${minutes.toString().padStart(2, "0")}:${seconds}`;
     return `${minutes}:${seconds}`;
+  }
+
+  function setMobileMenuOpen(isOpen) {
+    if (!navToggle || !siteNav) return;
+    siteNav.classList.toggle("is-open", isOpen);
+    navToggle.setAttribute("aria-expanded", String(isOpen));
+    navToggle.setAttribute("aria-label", isOpen ? "Close menu" : "Open menu");
+  }
+
+  function syncMobilePlayerViewport() {
+    const viewport = window.visualViewport;
+    const offset = window.innerWidth <= 820 && viewport && viewport.scale === 1
+      ? Math.max(0, Math.round(window.innerHeight - viewport.offsetTop - viewport.height))
+      : 0;
+    document.documentElement.style.setProperty("--player-viewport-bottom", `${offset}px`);
   }
 
   function playbackPosition() {
@@ -1184,6 +1202,31 @@
     });
   }
 
+  function updateDetailCoverSize() {
+    coverLayoutFrame = 0;
+    if (window.matchMedia("(max-width: 820px)").matches) return;
+    const detail = document.querySelector(".mix-detail");
+    const main = detail?.querySelector(".detail-main");
+    if (!main || !detail.querySelector(".cover.large")) return;
+
+    const style = window.getComputedStyle(detail);
+    const innerWidth = detail.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    const limit = Math.max(220, Math.min(520, Math.floor(innerWidth * 0.42)));
+    let size = Math.min(340, limit);
+    detail.style.setProperty("--detail-cover-size", `${size}px`);
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const nextSize = Math.min(limit, Math.max(size, Math.ceil(main.scrollHeight)));
+      if (nextSize <= size) break;
+      size = nextSize;
+      detail.style.setProperty("--detail-cover-size", `${size}px`);
+    }
+  }
+
+  function scheduleDetailCoverLayout() {
+    if (coverLayoutFrame) window.cancelAnimationFrame(coverLayoutFrame);
+    coverLayoutFrame = window.requestAnimationFrame(updateDetailCoverSize);
+  }
+
   function bindPage() {
     document.querySelectorAll("[data-waveform]").forEach(bindWaveform);
     syncCurrentTrackContextFromPage();
@@ -1287,6 +1330,7 @@
     updateWaveTimes();
     updateTracklistCue();
     updatePlayButtons();
+    scheduleDetailCoverLayout();
     countViews();
     window.dispatchEvent(new CustomEvent("mixstream:page-load"));
   }
@@ -1586,10 +1630,16 @@
     const list = document.querySelector("[data-current-track-list]");
     if (!list) return;
     const activeItems = Array.isArray(items) ? items : [];
+    const signature = JSON.stringify((hasPlaybackStarted ? activeItems : []).map((item) =>
+      [item.key, item.artist, item.title, Boolean(item.unknown)],
+    ));
+    if (list.dataset.activeSignature === signature) return;
+    list.dataset.activeSignature = signature;
     if (!hasPlaybackStarted || !activeItems.length) {
       list.classList.remove("is-visible");
       list.setAttribute("aria-hidden", "true");
       list.replaceChildren();
+      scheduleDetailCoverLayout();
       return;
     }
     const fragment = document.createDocumentFragment();
@@ -1619,6 +1669,7 @@
     list.replaceChildren(fragment);
     list.classList.add("is-visible");
     list.setAttribute("aria-hidden", "false");
+    scheduleDetailCoverLayout();
   }
 
   function updateTracklistCue() {
@@ -1691,6 +1742,23 @@
   window.addEventListener("resize", () => {
     renderAllWaveforms();
     renderProgressMarkers();
+    scheduleDetailCoverLayout();
+    syncMobilePlayerViewport();
+    if (window.innerWidth > 820) setMobileMenuOpen(false);
+  });
+  window.visualViewport?.addEventListener("resize", syncMobilePlayerViewport);
+  window.visualViewport?.addEventListener("scroll", syncMobilePlayerViewport);
+  navToggle?.addEventListener("click", () => {
+    setMobileMenuOpen(navToggle.getAttribute("aria-expanded") !== "true");
+  });
+  siteNav?.addEventListener("click", (event) => {
+    if (event.target.closest("a, button[type='submit']")) setMobileMenuOpen(false);
+  });
+  document.addEventListener("click", (event) => {
+    if (!event.target.closest(".topbar")) setMobileMenuOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") setMobileMenuOpen(false);
   });
   window.addEventListener("online", syncDirtyProgress);
   window.addEventListener("pagehide", () => {
@@ -1727,6 +1795,7 @@
   });
   window.addEventListener("mixstream:editor-playback", dismissPlayerForEditor);
   updateVolumeButton();
+  syncMobilePlayerViewport();
   bindPage();
   restoreInitialPlayback();
   syncDirtyProgress();

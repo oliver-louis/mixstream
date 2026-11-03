@@ -56,7 +56,9 @@
     {% if tracklist_items %}
       <button class="button secondary tracklist-toggle" type="button" data-tracklist-toggle>Track IDs</button>
     {% endif %}
-    <button class="play-big" type="button" data-play-card aria-label="Play mix">▶</button>
+    <div class="play-big-wrap">
+      <button class="play-big" type="button" data-play-card aria-label="Play mix">▶</button>
+    </div>
   </div>
   <div class="waveform hero-waveform"
        data-waveform='{{ mix.waveform|default:"[]" }}'

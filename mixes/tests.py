@@ -58,6 +58,56 @@ class MixVisibilityTests(TestCase):
             self.assertNotContains(response, '<section class="hero">')
             self.assertContains(response, "Public Set")
 
+    def test_mix_card_metadata_respects_viewer_and_processing_state(self):
+        self.public_mix.view_count = 24
+        self.public_mix.play_count = 21
+        self.public_mix.duration_seconds = 5448
+        self.public_mix.save(update_fields=["view_count", "play_count", "duration_seconds"])
+
+        guest = self.client.get(reverse("mixes:home"))
+        self.assertNotContains(guest, "<span>Public</span>")
+        self.assertNotContains(guest, "<span>Pending</span>")
+        self.assertContains(guest, '<span class="card-duration">90:48</span>')
+        self.assertContains(guest, 'aria-label="24 views"')
+        self.assertNotContains(guest, "21 plays")
+
+        self.client.force_login(self.friend)
+        member = self.client.get(reverse("mixes:home"))
+        self.assertContains(member, "<span>Public</span>")
+        self.assertNotContains(member, "<span>Pending</span>")
+
+        self.client.force_login(self.owner)
+        owner = self.client.get(reverse("mixes:home"))
+        self.assertContains(owner, "<span>Pending</span>")
+
+        self.other.is_staff = True
+        self.other.save(update_fields=["is_staff"])
+        self.client.force_login(self.other)
+        staff = self.client.get(reverse("mixes:home"))
+        self.assertContains(staff, "<span>Pending</span>")
+
+        self.public_mix.processing_status = Mix.ProcessingStatus.READY
+        self.public_mix.save(update_fields=["processing_status"])
+        ready = self.client.get(reverse("mixes:home"))
+        self.assertNotContains(ready, "<span>Ready</span>")
+
+    def test_card_duration_uses_total_minutes_below_five_hours(self):
+        self.assertEqual(self.public_mix.card_duration, "")
+        self.public_mix.duration_seconds = 5448
+        self.assertEqual(self.public_mix.card_duration, "90:48")
+        self.public_mix.duration_seconds = 5 * 3600 - 1
+        self.assertEqual(self.public_mix.card_duration, "299:59")
+        self.public_mix.duration_seconds = 5 * 3600
+        self.assertEqual(self.public_mix.card_duration, "5:00:00")
+
+    def test_mobile_navigation_toggle_is_present_for_guests_and_members(self):
+        for user in (None, self.owner):
+            if user:
+                self.client.force_login(user)
+            response = self.client.get(reverse("mixes:home"))
+            self.assertContains(response, 'data-nav-toggle')
+            self.assertContains(response, 'aria-controls="site-nav"')
+
     def test_global_player_does_not_preload_audio_in_idle_tabs(self):
         response = self.client.get(self.public_mix.get_absolute_url())
 
